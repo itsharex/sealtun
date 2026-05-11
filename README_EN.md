@@ -21,7 +21,23 @@ It connects your local development machine straight to the internet by dynamical
 
 ## Installation / Setup
 
-Download the `sealtun` binary for your platform from GitHub Releases. Remote tunnel Pods use the matching `ghcr.io/gitlayzer/sealtun` container image.
+Install the `sealtun` CLI with npm, or download the binary for your platform from GitHub Releases. Remote tunnel Pods use the matching `ghcr.io/gitlayzer/sealtun` container image.
+
+Install globally with npm:
+
+```bash
+npm install -g sealtun
+sealtun --version
+```
+
+Run temporarily with npx:
+
+```bash
+npx sealtun@latest --version
+npx sealtun@latest login
+```
+
+The npm package installs the matching platform-specific optional binary package automatically. It currently supports macOS, Linux, and Windows on `amd64/x64` and `arm64`.
 
 Quick install for macOS / Linux:
 

@@ -21,7 +21,23 @@ Sealtun 是一款功能强大、设计优雅的 CLI 工具，旨在为 **Sealos 
 
 ## 📦 安装
 
-推荐从 GitHub Releases 下载对应平台的 `sealtun` 二进制；远端隧道 Pod 使用同版本的 `ghcr.io/gitlayzer/sealtun` 镜像。
+推荐通过 npm 安装 `sealtun` CLI，也可以直接从 GitHub Releases 下载对应平台的二进制；远端隧道 Pod 使用同版本的 `ghcr.io/gitlayzer/sealtun` 镜像。
+
+使用 npm 全局安装：
+
+```bash
+npm install -g sealtun
+sealtun --version
+```
+
+使用 npx 临时运行：
+
+```bash
+npx sealtun@latest --version
+npx sealtun@latest login
+```
+
+npm 包会按当前系统自动安装对应平台的可选二进制依赖，当前支持 macOS、Linux、Windows 的 `amd64/x64` 与 `arm64`。
 
 macOS / Linux 快速安装：
 
