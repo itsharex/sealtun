@@ -12,8 +12,9 @@ It connects your local development machine straight to the internet by dynamical
 - 🌍 **Region Switching**: List built-in Sealos Cloud regions and switch regions by re-running login with `sealtun region use`.
 - 👤 **Named Profiles**: Save different Sealos accounts, regions, workspaces, and kubeconfigs as named profiles and switch between them.
 - 🚀 **One-Command Expose**: Execute `sealtun expose 8080`, and get a fully trusted HTTPS URL for your localhost securely routed.
-- 🌐 **Custom Domains**: Use `--domain` to print the required CNAME target and `domain status/doctor` to diagnose DNS, Ingress, and certificate readiness.
-- 📊 **Local Console and Observability**: Use `dashboard` for a local web console, and `logs` / `events` / `metrics` for remote pod logs, Kubernetes events, request counters, and runtime state.
+- 🌐 **Custom Domain Automation**: Use `domain plan/add/verify/status/doctor` to generate CNAME guidance, wait for DNS, attach domains, and inspect certificate readiness.
+- 📊 **Status and Diagnostics**: Use `doctor <tunnel-id>`, `inspect --remote`, `logs`, `events`, and `metrics` to diagnose local ports, daemon state, remote Pods, Services, Ingresses, and certificates.
+- 🧩 **Protocol Templates**: Use `template https|ssh|tcp|mysql|postgres|redis|mqtt` to generate commands and `sealtun.yaml` examples.
 - 🧾 **Declarative Config**: Use `apply -f sealtun.yaml` to declare tunnels in YAML and create or update them with stable names.
 - 🌐 **Optimized for Sealos**: Native support for Sealos Cloud domains, HTTPS traffic, and WebSocket tunnels.
 - 🐳 **All-in-One Binary**: The client and the server agent live comfortably in the exact same compact binary and Docker image.
@@ -247,7 +248,14 @@ sealtun expose 3000 --domain app.example.com --wait-domain
 
 Or attach one to an existing tunnel after DNS is ready:
 ```bash
+# Show the DNS record you need first
+sealtun domain plan <tunnel-id> app.example.com
+
+# Attach after DNS is ready
 sealtun domain set <tunnel-id> app.example.com
+
+# Or wait for DNS, attach automatically, and keep waiting for certificate readiness
+sealtun domain add <tunnel-id> app.example.com --wait --timeout 5m
 ```
 
 Sealtun keeps a Sealos-managed host as the tunnel control endpoint and CNAME target. It writes the custom host to Ingress and creates cert-manager `Issuer` and `Certificate` resources only after the CNAME points to that Sealos host. Configure DNS at your provider:
@@ -294,6 +302,16 @@ sealtun events <tunnel-id>
 sealtun events <tunnel-id> --json
 ```
 
+Run local and remote diagnostics:
+```bash
+# Global health check
+sealtun doctor
+
+# Single-tunnel diagnosis with local port, daemon, remote resource, and next-step suggestions
+sealtun doctor <tunnel-id>
+sealtun doctor <tunnel-id> --json
+```
+
 `metrics` combines local session state, remote Deployment/Pod/Ingress readiness, and server-side request counters when the remote pod supports the Bearer-secret-protected `/_sealtun/metrics` endpoint. TCP/SSH tunnels also expose TCP connection, active connection, byte, and error counters.
 
 Run the local read-only dashboard:
@@ -306,7 +324,19 @@ sealtun dashboard --addr 127.0.0.1 --port 19777
 
 The dashboard listens locally and reads the same data as the CLI: local sessions, login state, remote diagnostics, and custom domain readiness.
 
-### 7. Declarative config
+### 7. Protocol templates
+When you are unsure which command or declarative config to use, generate a template first:
+
+```bash
+sealtun template https --name web --port 3000 --domain app.example.com
+sealtun template ssh
+sealtun template postgres
+sealtun template redis --name cache
+```
+
+Templates print both a one-shot `sealtun expose` command and a `sealtun.yaml` snippet. `mysql`, `postgres`, `redis`, and `mqtt` templates default to generic TCP L4 entries; only HTTPS templates support custom domains and access controls.
+
+### 8. Declarative config
 Create `sealtun.yaml`:
 ```yaml
 version: v1

@@ -66,6 +66,8 @@ type domainStatusItem struct {
 var domainJSON bool
 var domainVerifyWait bool
 var domainVerifyTimeout time.Duration
+var domainAddWait bool
+var domainAddTimeout time.Duration
 var domainStatusTimeout = 15 * time.Second
 var domainDoctorTimeout = 15 * time.Second
 var lookupCNAME = net.DefaultResolver.LookupCNAME
@@ -103,6 +105,86 @@ var domainSetCmd = &cobra.Command{
 		}
 		if err != nil {
 			return err
+		}
+		return nil
+	},
+}
+
+var domainPlanCmd = &cobra.Command{
+	Use:          "plan [tunnel-id] [domain]",
+	Short:        "Show the DNS and attach plan for a custom domain",
+	Args:         cobra.ExactArgs(2),
+	SilenceUsage: true,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		customDomain, err := validateCustomDomain(args[1])
+		if err != nil {
+			return err
+		}
+		if customDomain == "" {
+			return fmt.Errorf("custom domain is required")
+		}
+		payload, err := planSessionCustomDomain(args[0], customDomain)
+		if payload != nil {
+			if printErr := printDomainPayload(cmd, payload); printErr != nil {
+				return printErr
+			}
+		}
+		return err
+	},
+}
+
+var domainAddCmd = &cobra.Command{
+	Use:          "add [tunnel-id] [domain]",
+	Short:        "Attach a custom domain, optionally waiting for DNS readiness",
+	Args:         cobra.ExactArgs(2),
+	SilenceUsage: true,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		customDomain, err := validateCustomDomain(args[1])
+		if err != nil {
+			return err
+		}
+		if customDomain == "" {
+			return fmt.Errorf("custom domain is required")
+		}
+		if domainAddWait {
+			if domainAddTimeout <= 0 {
+				return fmt.Errorf("--timeout must be greater than 0 when --wait is set")
+			}
+			plan, err := planSessionCustomDomain(args[0], customDomain)
+			if plan != nil && !domainJSON {
+				if printErr := printDomainPayload(cmd, plan); printErr != nil {
+					return printErr
+				}
+			}
+			if err != nil {
+				return err
+			}
+			waitOut := cmd.OutOrStdout()
+			if domainJSON {
+				waitOut = cmd.ErrOrStderr()
+			}
+			fmt.Fprintf(waitOut, "Waiting for DNS CNAME readiness (timeout %s)...\n", domainAddTimeout)
+			if err := waitForDomainCNAMEReady(cmd.Context(), customDomain, plan.SealosHost, domainAddTimeout); err != nil {
+				return err
+			}
+		}
+		payload, err := configureSessionCustomDomain(cmd.Context(), args[0], customDomain)
+		if payload != nil && !(domainJSON && domainAddWait) {
+			if printErr := printDomainPayload(cmd, payload); printErr != nil {
+				return printErr
+			}
+		}
+		if err != nil {
+			return err
+		}
+		if domainAddWait {
+			verify, verifyErr := waitForSessionDomain(cmd.Context(), args[0], domainAddTimeout)
+			if verify != nil {
+				if printErr := printDomainVerifyPayload(cmd, verify); printErr != nil {
+					return printErr
+				}
+			}
+			return domainVerifyResultError(verify, verifyErr)
 		}
 		return nil
 	},
@@ -194,6 +276,8 @@ var domainDoctorCmd = &cobra.Command{
 
 func init() {
 	rootCmd.AddCommand(domainCmd)
+	domainCmd.AddCommand(domainPlanCmd)
+	domainCmd.AddCommand(domainAddCmd)
 	domainCmd.AddCommand(domainSetCmd)
 	domainCmd.AddCommand(domainClearCmd)
 	domainCmd.AddCommand(domainVerifyCmd)
@@ -202,8 +286,38 @@ func init() {
 	domainCmd.PersistentFlags().BoolVar(&domainJSON, "json", false, "Output domain details as JSON")
 	domainVerifyCmd.Flags().BoolVar(&domainVerifyWait, "wait", false, "Wait until DNS, Ingress, and certificate are ready")
 	domainVerifyCmd.Flags().DurationVar(&domainVerifyTimeout, "timeout", 5*time.Minute, "Maximum time to wait for domain readiness")
+	domainAddCmd.Flags().BoolVar(&domainAddWait, "wait", false, "Wait for DNS, then attach the domain and wait for certificate readiness")
+	domainAddCmd.Flags().DurationVar(&domainAddTimeout, "timeout", 5*time.Minute, "Maximum time to wait for DNS and domain readiness")
 	domainStatusCmd.Flags().DurationVar(&domainStatusTimeout, "timeout", 15*time.Second, "Per-domain readiness check timeout")
 	domainDoctorCmd.Flags().DurationVar(&domainDoctorTimeout, "timeout", 15*time.Second, "Per-domain diagnostic timeout")
+}
+
+func planSessionCustomDomain(tunnelID, customDomain string) (*domainPayload, error) {
+	sess, err := findSession(tunnelID)
+	if err != nil {
+		return nil, err
+	}
+	if !sessionSupportsCustomDomain(*sess) {
+		return nil, fmt.Errorf("custom domains are only supported for https tunnels")
+	}
+	sealosHost := sessionSealosHostForDomain(*sess, "")
+	if sealosHost == "" {
+		client, err := k8sClientForSession(*sess)
+		if err != nil {
+			return nil, err
+		}
+		sealosHost = sessionSealosHostForDomain(*sess, client.WithNamespace(sess.Namespace).SealosHost(sess.TunnelID))
+	}
+	if sealosHost == "" {
+		return nil, fmt.Errorf("sealos CNAME target is unavailable for tunnel %s", sess.TunnelID)
+	}
+	return &domainPayload{
+		TunnelID:     sess.TunnelID,
+		PublicHost:   valueOr(sess.Host, sealosHost),
+		SealosHost:   sealosHost,
+		CustomDomain: customDomain,
+		CNAME:        fmt.Sprintf("%s -> %s", customDomain, sealosHost),
+	}, nil
 }
 
 func configureSessionCustomDomain(parent context.Context, tunnelID, customDomain string) (*domainPayload, error) {
@@ -509,11 +623,7 @@ func printDomainStatusPayload(cmd *cobra.Command, payload *domainStatusPayload, 
 			fmt.Fprintf(out, "  DNS CNAME: %s\n", valueOr(item.DNSCNAME, "unavailable"))
 			fmt.Fprintf(out, "  DNS ready: %s\n", yesNo(item.DNSReady))
 			fmt.Fprintf(out, "  Ingress ready: %s\n", yesNo(item.IngressReady))
-			fmt.Fprintf(out, "  Certificate: exists=%s ready=%s", yesNo(item.CertificateExists), yesNo(item.CertificateReady))
-			if item.CertificateSecret != "" {
-				fmt.Fprintf(out, " secret=%s", item.CertificateSecret)
-			}
-			fmt.Fprintln(out)
+			fmt.Fprintf(out, "  Certificate: exists=%s ready=%s\n", yesNo(item.CertificateExists), yesNo(item.CertificateReady))
 			fmt.Fprintf(out, "  Ready: %s\n", yesNo(item.Ready))
 			for _, warning := range item.Warnings {
 				fmt.Fprintf(out, "  Warning: %s\n", warning)
@@ -765,11 +875,7 @@ func printDomainVerifyPayload(cmd *cobra.Command, payload *domainVerifyPayload) 
 	fmt.Fprintf(out, "  DNS CNAME: %s\n", valueOr(payload.DNSCNAME, "unavailable"))
 	fmt.Fprintf(out, "  DNS ready: %s\n", yesNo(payload.DNSReady))
 	fmt.Fprintf(out, "  Ingress ready: %s\n", yesNo(payload.IngressReady))
-	fmt.Fprintf(out, "  Certificate: exists=%s ready=%s", yesNo(payload.CertificateExists), yesNo(payload.CertificateReady))
-	if payload.CertificateSecret != "" {
-		fmt.Fprintf(out, " secret=%s", payload.CertificateSecret)
-	}
-	fmt.Fprintln(out)
+	fmt.Fprintf(out, "  Certificate: exists=%s ready=%s\n", yesNo(payload.CertificateExists), yesNo(payload.CertificateReady))
 	fmt.Fprintf(out, "  Ready: %s\n", yesNo(payload.Ready))
 	if len(payload.Warnings) > 0 {
 		fmt.Fprintln(out, "")

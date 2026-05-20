@@ -53,6 +53,7 @@ Actions:
 sealtun list
 sealtun inspect <tunnel-id>
 sealtun doctor
+sealtun doctor <tunnel-id>
 sealtun stop <tunnel-id>
 sealtun cleanup
 ```
@@ -110,6 +111,7 @@ Symptoms:
 Actions:
 
 ```bash
+sealtun doctor <tunnel-id>
 sealtun inspect <tunnel-id> --remote
 sealtun logs <tunnel-id> --tail 200
 sealtun metrics <tunnel-id> --json
@@ -118,6 +120,7 @@ sealtun doctor --json
 ```
 
 Remote diagnostics inspect the Sealtun-managed Deployment, Service, Ingress, Pod, Events, and readiness where available. If code changes are needed, inspect `pkg/k8s`, `cmd/inspect.go`, `cmd/doctor.go`, and related tests.
+Prefer `sealtun doctor <tunnel-id>` before asking the user to manually inspect Kubernetes. It summarizes local owner state, local port reachability, remote resource readiness, and next-step suggestions.
 
 ## Custom Domain, DNS, Certificate
 
@@ -131,6 +134,8 @@ Actions:
 
 ```bash
 sealtun domain status
+sealtun domain plan <tunnel-id> app.example.com
+sealtun domain add <tunnel-id> app.example.com --wait --timeout 5m
 sealtun domain verify <tunnel-id>
 sealtun domain verify <tunnel-id> --wait --timeout 5m
 sealtun domain doctor <tunnel-id>
@@ -143,6 +148,7 @@ CNAME <custom-domain> -> <sealos-host>
 ```
 
 Sealtun intentionally verifies the CNAME before writing the custom host to Ingress. This avoids claiming arbitrary hosts in shared Ingress infrastructure. Certificate readiness depends on cert-manager after the custom host is attached.
+Use `domain plan` for non-mutating DNS guidance. Use `domain add --wait` only when the user explicitly wants to bind the domain and wait for readiness.
 
 ## Access Control Problems
 

@@ -268,7 +268,7 @@ func printInspect(cmd *cobra.Command, payload *inspectPayload) {
 		if payload.Remote.Certificate != nil {
 			fmt.Fprintf(out, "  Certificate: %s", yesNo(payload.Remote.Certificate.Exists))
 			if payload.Remote.Certificate.Exists {
-				fmt.Fprintf(out, " (ready=%s secret=%s)", yesNo(payload.Remote.Certificate.Ready), valueOr(payload.Remote.Certificate.SecretName, "-"))
+				fmt.Fprintf(out, " (ready=%s)", yesNo(payload.Remote.Certificate.Ready))
 			}
 			fmt.Fprintln(out)
 		}

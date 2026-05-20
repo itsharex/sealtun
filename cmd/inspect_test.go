@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/labring/sealtun/pkg/k8s"
 	"github.com/labring/sealtun/pkg/session"
 )
 
@@ -192,5 +193,34 @@ func TestPrintInspectShowsTCPEndpoint(t *testing.T) {
 	}
 	if strings.Contains(text, "Public URL") || strings.Contains(text, "SSH command") {
 		t.Fatalf("tcp inspect output should not show HTTPS or SSH endpoint fields, got:\n%s", text)
+	}
+}
+
+func TestPrintInspectHidesRemoteCertificateSecretInText(t *testing.T) {
+	payload := &inspectPayload{
+		TunnelID:           "webdev",
+		Status:             "active",
+		Mode:               "daemon",
+		Protocol:           "https",
+		Host:               "web.example.com",
+		LocalPort:          "3000",
+		LocalPortReachable: true,
+		Remote: &k8s.TunnelDiagnostics{
+			Certificate: &k8s.CertificateDiagnostics{
+				Exists:     true,
+				Ready:      true,
+				SecretName: "sealtun-webdev-custom-tls",
+			},
+		},
+	}
+
+	var output bytes.Buffer
+	inspectCmd.SetOut(&output)
+	t.Cleanup(func() { inspectCmd.SetOut(nil) })
+
+	printInspect(inspectCmd, payload)
+	text := output.String()
+	if strings.Contains(text, "secret=") || strings.Contains(text, "sealtun-webdev-custom-tls") {
+		t.Fatalf("inspect text output should not expose certificate secret names, got:\n%s", text)
 	}
 }

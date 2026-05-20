@@ -12,8 +12,9 @@ Sealtun 是一款功能强大、设计优雅的 CLI 工具，旨在为 **Sealos 
 - 🌍 **区域切换**：支持查看已内置的 Sealos Cloud region，并通过 `sealtun region use` 重新登录切换区域。
 - 👤 **Profile 多账号管理**：可把不同 Sealos 账号、region、workspace 和 kubeconfig 保存为命名 profile，按需切换。
 - 🚀 **一键暴露服务**：执行 `sealtun expose 8080`，即可获得一个受信任的 HTTPS URL，将流量安全地路由到本地。
-- 🌐 **自定义域名**：新建隧道时可用 `--domain` 生成 CNAME 指引，并通过 `domain status/doctor` 检查 DNS、Ingress 与证书状态。
-- 📊 **本地控制台与观测**：`dashboard` 提供本地 Web 控制台，`logs`、`events` 和 `metrics` 可查看远端 Pod 日志、Kubernetes 事件、请求计数与运行状态。
+- 🌐 **自定义域名自动化**：可用 `domain plan/add/verify/status/doctor` 生成 CNAME 指引、等待 DNS、绑定域名并检查证书状态。
+- 📊 **状态与诊断**：`doctor <tunnel-id>`、`inspect --remote`、`logs`、`events` 和 `metrics` 可定位本地端口、daemon、远端 Pod、Service、Ingress 与证书问题。
+- 🧩 **协议模板**：`template https|ssh|tcp|mysql|postgres|redis|mqtt` 可生成直接命令和 `sealtun.yaml` 示例。
 - 🧾 **声明式配置**：`apply -f sealtun.yaml` 可用 YAML 声明隧道，并以稳定名称幂等创建或更新。
 - 🌐 **深度适配 Sealos**：原生使用 Sealos Cloud 的 Kubernetes、Service 与 Ingress 能力，当前稳定支持 HTTPS 入口和 WebSocket 隧道。
 - 🐳 **全能二进制文件**：客户端和服务器代理共用同一个精简的二进制文件和 Docker 镜像。
@@ -247,7 +248,14 @@ sealtun expose 3000 --domain app.example.com --wait-domain
 
 或者在 DNS 生效后对已有隧道绑定：
 ```bash
+# 先查看需要配置的 DNS
+sealtun domain plan <tunnel-id> app.example.com
+
+# DNS 已经生效后绑定
 sealtun domain set <tunnel-id> app.example.com
+
+# 或者等待 DNS 生效后自动绑定，并继续等待证书就绪
+sealtun domain add <tunnel-id> app.example.com --wait --timeout 5m
 ```
 
 Sealtun 会保留一个 Sealos 官方子域名作为隧道控制面和 CNAME 目标。只有 CNAME 已经指向该 Sealos host 后，Sealtun 才会把自定义域名写入 Ingress，并创建 cert-manager `Issuer` 与 `Certificate`。你需要在自己的 DNS 服务商处配置：
@@ -294,6 +302,16 @@ sealtun events <tunnel-id>
 sealtun events <tunnel-id> --json
 ```
 
+一键诊断本地与远端状态：
+```bash
+# 全局健康检查
+sealtun doctor
+
+# 单条隧道诊断，会给出本地端口、daemon、远端资源和下一步建议
+sealtun doctor <tunnel-id>
+sealtun doctor <tunnel-id> --json
+```
+
 `metrics` 会聚合本地 session 状态、远端 Deployment/Pod/Ingress 状态，并在远端 Pod 支持时读取受 Bearer secret 保护的 `/_sealtun/metrics` 请求计数。TCP/SSH 四层隧道还会暴露 TCP 连接数、活跃连接数、字节数和错误数。
 
 启动本地只读控制台：
@@ -306,7 +324,19 @@ sealtun dashboard --addr 127.0.0.1 --port 19777
 
 Dashboard 仅监听本地地址，数据来自当前 CLI 进程读取到的本地 session、登录状态、远端诊断和自定义域名状态。
 
-### 7. 声明式配置
+### 7. 协议模板
+不确定该怎么写命令或声明式配置时，可以先生成模板：
+
+```bash
+sealtun template https --name web --port 3000 --domain app.example.com
+sealtun template ssh
+sealtun template postgres
+sealtun template redis --name cache
+```
+
+模板会同时输出一次性 `sealtun expose` 命令和可提交到项目内的 `sealtun.yaml` 片段。`mysql`、`postgres`、`redis`、`mqtt` 模板默认走通用 TCP 四层入口；HTTPS 模板才支持自定义域名和访问控制。
+
+### 8. 声明式配置
 创建 `sealtun.yaml`：
 ```yaml
 version: v1

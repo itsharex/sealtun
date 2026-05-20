@@ -9,9 +9,10 @@ import (
 )
 
 var rootCmd = &cobra.Command{
-	Use:     "sealtun",
-	Version: version.Version,
-	Short:   "A cloudflared-like tunnel for Sealos Cloud",
+	Use:           "sealtun",
+	Version:       version.Version,
+	Short:         "A cloudflared-like tunnel for Sealos Cloud",
+	SilenceErrors: true,
 	Long: `Sealtun provides a simple way to expose local development ports to the public internet
 via Sealos Cloud using Kubernetes native resources (Deployment, Service, Ingress) and WebSocket tunneling.`,
 }

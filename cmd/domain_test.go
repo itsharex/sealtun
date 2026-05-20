@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"strings"
@@ -172,6 +173,60 @@ func TestConfigureSessionCustomDomainRejectsSSH(t *testing.T) {
 	}
 }
 
+func TestPlanSessionCustomDomainRejectsSSHBeforeK8sClient(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if err := session.Save(session.TunnelSession{
+		TunnelID:  "sshdev",
+		Protocol:  "ssh",
+		Host:      "sealtun-sshdev-ns.sealosgzg.site",
+		Namespace: "ns-demo",
+		CreatedAt: time.Now().Format(time.RFC3339),
+	}); err != nil {
+		t.Fatalf("save session: %v", err)
+	}
+
+	_, err := planSessionCustomDomain("sshdev", "dev.example.com")
+	if err == nil || !strings.Contains(err.Error(), "only supported for https") {
+		t.Fatalf("expected ssh custom domain rejection, got %v", err)
+	}
+}
+
+func TestPlanSessionCustomDomainUsesStoredSealosHostWithoutLogin(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if err := session.Save(session.TunnelSession{
+		TunnelID:   "webdev",
+		Protocol:   "https",
+		Host:       "sealtun-webdev-ns.sealosgzg.site",
+		SealosHost: "sealtun-webdev-ns.sealosgzg.site",
+		Namespace:  "ns-demo",
+		CreatedAt:  time.Now().Format(time.RFC3339),
+	}); err != nil {
+		t.Fatalf("save session: %v", err)
+	}
+
+	payload, err := planSessionCustomDomain("webdev", "dev.example.com")
+	if err != nil {
+		t.Fatalf("planSessionCustomDomain returned error: %v", err)
+	}
+	if payload.CNAME != "dev.example.com -> sealtun-webdev-ns.sealosgzg.site" {
+		t.Fatalf("unexpected cname: %s", payload.CNAME)
+	}
+}
+
+func TestDomainPlanRejectsEmptyDomain(t *testing.T) {
+	_, err := validateCustomDomain("")
+	if err != nil {
+		t.Fatalf("empty domain should normalize without validation error: %v", err)
+	}
+	cmd := *domainPlanCmd
+	err = cmd.RunE(&cmd, []string{"abc123", ""})
+	if err == nil || !strings.Contains(err.Error(), "custom domain is required") {
+		t.Fatalf("expected custom domain required error, got %v", err)
+	}
+}
+
 func TestSessionSupportsCustomDomainAllowsLegacyHTTPS(t *testing.T) {
 	if !sessionSupportsCustomDomain(session.TunnelSession{}) {
 		t.Fatal("legacy sessions without protocol should be treated as HTTPS")
@@ -289,6 +344,62 @@ func TestDomainListContainsNormalizesDNSNames(t *testing.T) {
 	}
 	if domainListContains([]string{"old.example.com"}, "dev.example.com") {
 		t.Fatal("expected different DNS name not to match")
+	}
+}
+
+func TestPrintDomainStatusPayloadHidesCertificateSecretInText(t *testing.T) {
+	payload := &domainStatusPayload{
+		TotalSessions: 1,
+		CustomDomains: 1,
+		Ready:         1,
+		Items: []domainStatusItem{{
+			TunnelID:          "webdev",
+			CustomDomain:      "app.example.com",
+			PublicHost:        "app.example.com",
+			SealosHost:        "sealtun-webdev-ns.sealosgzg.site",
+			CertificateExists: true,
+			CertificateReady:  true,
+			CertificateSecret: "sealtun-webdev-custom-tls",
+			Ready:             true,
+		}},
+	}
+
+	var output bytes.Buffer
+	domainJSON = false
+	domainStatusCmd.SetOut(&output)
+	t.Cleanup(func() { domainStatusCmd.SetOut(nil) })
+
+	if err := printDomainStatusPayload(domainStatusCmd, payload, true); err != nil {
+		t.Fatalf("printDomainStatusPayload returned error: %v", err)
+	}
+	text := output.String()
+	if strings.Contains(text, "secret=") || strings.Contains(text, "sealtun-webdev-custom-tls") {
+		t.Fatalf("domain status text output should not expose certificate secret names, got:\n%s", text)
+	}
+}
+
+func TestPrintDomainVerifyPayloadHidesCertificateSecretInText(t *testing.T) {
+	payload := &domainVerifyPayload{
+		TunnelID:          "webdev",
+		CustomDomain:      "app.example.com",
+		SealosHost:        "sealtun-webdev-ns.sealosgzg.site",
+		CertificateExists: true,
+		CertificateReady:  true,
+		CertificateSecret: "sealtun-webdev-custom-tls",
+		Ready:             true,
+	}
+
+	var output bytes.Buffer
+	domainJSON = false
+	domainVerifyCmd.SetOut(&output)
+	t.Cleanup(func() { domainVerifyCmd.SetOut(nil) })
+
+	if err := printDomainVerifyPayload(domainVerifyCmd, payload); err != nil {
+		t.Fatalf("printDomainVerifyPayload returned error: %v", err)
+	}
+	text := output.String()
+	if strings.Contains(text, "secret=") || strings.Contains(text, "sealtun-webdev-custom-tls") {
+		t.Fatalf("domain verify text output should not expose certificate secret names, got:\n%s", text)
 	}
 }
 

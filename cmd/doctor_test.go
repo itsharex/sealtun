@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"net"
 	"os"
 	"strconv"
@@ -9,6 +10,7 @@ import (
 	"time"
 
 	daemonstate "github.com/labring/sealtun/pkg/daemon"
+	"github.com/labring/sealtun/pkg/k8s"
 	"github.com/labring/sealtun/pkg/session"
 )
 
@@ -41,6 +43,99 @@ func TestCollectDoctorPayload(t *testing.T) {
 	}
 	if len(payload.Warnings) == 0 {
 		t.Fatal("expected warnings to be present")
+	}
+}
+
+func TestCollectTunnelDoctorPayloadForStoppedSession(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	if err := session.Save(session.TunnelSession{
+		TunnelID:        "stopdoc",
+		Host:            "stop.example.com",
+		LocalPort:       "3000",
+		Protocol:        "https",
+		Mode:            "daemon",
+		ConnectionState: session.ConnectionStateStopped,
+		CreatedAt:       time.Now().Format(time.RFC3339),
+	}); err != nil {
+		t.Fatalf("save session: %v", err)
+	}
+
+	payload, err := collectTunnelDoctorPayload(context.Background(), "stopdoc")
+	if err != nil {
+		t.Fatalf("collectTunnelDoctorPayload returned error: %v", err)
+	}
+	if payload.Status != "stopped" {
+		t.Fatalf("expected stopped status, got %s", payload.Status)
+	}
+	if len(payload.Checks) < 3 || payload.Checks[1].Status != "skip" || payload.Checks[2].Status != "skip" {
+		t.Fatalf("expected stopped owner/local-port checks to be skipped, got %#v", payload.Checks)
+	}
+	if len(payload.Suggestions) == 0 || !strings.Contains(payload.Suggestions[0], "sealtun start stopdoc") {
+		t.Fatalf("expected start suggestion, got %#v", payload.Suggestions)
+	}
+}
+
+func TestRemoteDoctorChecksSkipScaledToZeroDeployment(t *testing.T) {
+	checks := remoteDoctorChecks(&k8s.TunnelDiagnostics{
+		Deployment: k8s.DeploymentDiagnostics{
+			Exists:          true,
+			DesiredReplicas: 0,
+			ReadyReplicas:   0,
+		},
+		Service: k8s.ServiceDiagnostics{Exists: true},
+		Ingress: k8s.IngressDiagnostics{Exists: true},
+	})
+	if len(checks) == 0 || checks[0].Name != "deployment" || checks[0].Status != "skip" {
+		t.Fatalf("expected scaled-to-zero deployment check to be skipped, got %#v", checks)
+	}
+	if len(checks) < 2 || checks[1].Detail != "no ports reported" {
+		t.Fatalf("expected empty service ports to have a readable detail, got %#v", checks)
+	}
+}
+
+func TestRemoteDoctorChecksHideCertificateSecretName(t *testing.T) {
+	checks := remoteDoctorChecks(&k8s.TunnelDiagnostics{
+		Deployment: k8s.DeploymentDiagnostics{
+			Exists:          true,
+			DesiredReplicas: 1,
+			ReadyReplicas:   1,
+		},
+		Service: k8s.ServiceDiagnostics{Exists: true, Ports: []string{"http:80"}},
+		Ingress: k8s.IngressDiagnostics{Exists: true, Hosts: []string{"app.example.com"}},
+		Certificate: &k8s.CertificateDiagnostics{
+			Exists:     true,
+			Ready:      true,
+			SecretName: "sealtun-webdev-custom-tls",
+		},
+	})
+
+	for _, check := range checks {
+		if strings.Contains(check.Detail, "sealtun-webdev-custom-tls") {
+			t.Fatalf("doctor check should not expose certificate secret names, got %#v", checks)
+		}
+	}
+}
+
+func TestCertificateDoctorDetail(t *testing.T) {
+	tests := []struct {
+		name string
+		cert *k8s.CertificateDiagnostics
+		want string
+	}{
+		{name: "nil", cert: nil, want: "missing"},
+		{name: "missing", cert: &k8s.CertificateDiagnostics{}, want: "missing"},
+		{name: "not ready", cert: &k8s.CertificateDiagnostics{Exists: true}, want: "not ready"},
+		{name: "ready", cert: &k8s.CertificateDiagnostics{Exists: true, Ready: true}, want: "ready"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := certificateDoctorDetail(tt.cert); got != tt.want {
+				t.Fatalf("expected %q, got %q", tt.want, got)
+			}
+		})
 	}
 }
 

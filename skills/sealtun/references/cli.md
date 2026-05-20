@@ -111,6 +111,9 @@ Token constraints and behavior:
 sealtun expose 3000 --domain app.example.com
 sealtun expose 3000 --domain app.example.com --wait-domain --domain-timeout 5m
 
+sealtun domain plan <tunnel-id> app.example.com
+sealtun domain add <tunnel-id> app.example.com
+sealtun domain add <tunnel-id> app.example.com --wait --timeout 5m
 sealtun domain set <tunnel-id> app.example.com
 sealtun domain verify <tunnel-id>
 sealtun domain verify <tunnel-id> --wait --timeout 5m
@@ -126,6 +129,22 @@ CNAME app.example.com -> <sealos-host>
 ```
 
 Only after CNAME ownership verification does Sealtun write the custom host to Ingress and manage cert-manager resources.
+
+Prefer `domain plan` when the user only needs DNS guidance. Use `domain add --wait` when the user explicitly wants Sealtun to wait for DNS, attach the domain, and wait for certificate readiness. `domain set` remains the direct attach command when DNS is already known to be ready.
+
+## Protocol Templates
+
+```bash
+sealtun template https --name web --port 3000 --domain app.example.com
+sealtun template ssh
+sealtun template tcp --name debug --port 9000
+sealtun template mysql
+sealtun template postgres
+sealtun template redis --name cache
+sealtun template mqtt
+```
+
+Use templates when the user asks how to expose a common protocol or wants a starter `sealtun.yaml`. Templates are read-only and print both a one-shot `sealtun expose` command and a YAML snippet. `mysql`, `postgres`, `redis`, and `mqtt` map to generic `tcp`; only `https` templates accept `--domain`.
 
 ## SSH Over Sealtun
 
@@ -187,10 +206,14 @@ sealtun dashboard
 sealtun dashboard --addr 127.0.0.1 --port 19777
 
 sealtun doctor
+sealtun doctor <tunnel-id>
 sealtun doctor --json
+sealtun doctor <tunnel-id> --json
 ```
 
 Dashboard is local and read-only by default. `--allow-remote` allows a non-loopback dashboard address and should be treated as a security-sensitive choice.
+
+Use `doctor <tunnel-id>` for "why can't I connect" issues. It checks the local session, owner process or daemon, local target port, remote resources where credentials are available, and prints next-step suggestions.
 
 ## Stop And Clean Up
 
