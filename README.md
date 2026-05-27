@@ -13,7 +13,7 @@ Sealtun 是一款功能强大、设计优雅的 CLI 工具，旨在为 **Sealos 
 - 👤 **Profile 多账号管理**：可把不同 Sealos 账号、region、workspace 和 kubeconfig 保存为命名 profile，按需切换。
 - 🚀 **一键暴露服务**：执行 `sealtun expose 8080`，即可获得一个受信任的 HTTPS URL，将流量安全地路由到本地。
 - 🌐 **自定义域名自动化**：可用 `domain plan/add/verify/status/doctor` 生成 CNAME 指引、等待 DNS、绑定域名并检查证书状态。
-- 📊 **状态与诊断**：`doctor <tunnel-id>`、`inspect --remote`、`logs`、`events` 和 `metrics` 可定位本地端口、daemon、远端 Pod、Service、Ingress 与证书问题。
+- 📊 **状态、诊断与工作台**：`doctor <tunnel-id>`、`inspect --remote`、`logs`、`events`、`metrics` 和 `dashboard` 可定位本地端口、daemon、远端 Pod、Service、Ingress 与证书问题，也可在本地工作台中管理隧道。
 - 🧩 **协议模板**：`template https|ssh|tcp|mysql|postgres|redis|mqtt` 可生成直接命令和 `sealtun.yaml` 示例。
 - 🧾 **声明式配置**：`apply -f sealtun.yaml` 可用 YAML 声明隧道，并以稳定名称幂等创建或更新。
 - 🌐 **深度适配 Sealos**：原生使用 Sealos Cloud 的 Kubernetes、Service 与 Ingress 能力，当前稳定支持 HTTPS 入口和 WebSocket 隧道。
@@ -314,7 +314,7 @@ sealtun doctor <tunnel-id> --json
 
 `metrics` 会聚合本地 session 状态、远端 Deployment/Pod/Ingress 状态，并在远端 Pod 支持时读取受 Bearer secret 保护的 `/_sealtun/metrics` 请求计数。TCP/SSH 四层隧道还会暴露 TCP 连接数、活跃连接数、字节数和错误数。
 
-启动本地只读控制台：
+启动本地工作台：
 ```bash
 sealtun dashboard
 
@@ -322,7 +322,14 @@ sealtun dashboard
 sealtun dashboard --addr 127.0.0.1 --port 19777
 ```
 
-Dashboard 仅监听本地地址，数据来自当前 CLI 进程读取到的本地 session、登录状态、远端诊断和自定义域名状态。
+Dashboard 默认仅监听本地地址，数据来自当前 active profile/region/namespace 的本地 session、登录状态、远端诊断和自定义域名状态。页面可以创建 HTTPS/SSH/TCP 隧道、执行 `sealtun.yaml` 的 dry-run/diff/apply、stop/start/cleanup 隧道、查看 logs/metrics/events，并执行 domain plan/add/verify/clear。
+
+```bash
+# 允许远程访问工作台，仅建议在可信网络临时使用
+sealtun dashboard --addr 0.0.0.0 --allow-remote
+```
+
+远程模式不会把 dashboard token 写进 HTML；访问者需要 URL fragment 或请求头中的 token。所有写操作都要求页面确认，并由后端再次校验 `confirm` 字段，避免误触或脚本误调用。
 
 ### 7. 协议模板
 不确定该怎么写命令或声明式配置时，可以先生成模板：

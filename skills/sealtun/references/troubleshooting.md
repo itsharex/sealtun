@@ -173,10 +173,10 @@ Check the session access policy. Tokens must be at least 8 characters. Temporary
 
 `metrics` combines local session data, remote Kubernetes readiness, and server counters where the remote image supports them. Missing server counters usually mean the remote pod is older or unreachable, not necessarily that the tunnel is down.
 
-Dashboard is local and read-only by default:
+Dashboard is a local workbench by default:
 
 ```bash
 sealtun dashboard --addr 127.0.0.1 --port 19777
 ```
 
-Treat `dashboard --allow-remote` as exposing local operational data.
+It can create tunnels, run YAML dry-run/diff/apply, stop/start/cleanup tunnels, show logs/metrics/events, and manage custom domains for the current active profile/region/namespace. Mutating actions require both the dashboard token and a confirmation value. Treat `dashboard --allow-remote` as exposing local operational control, not just read-only data; remote mode does not embed the token in HTML.

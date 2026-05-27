@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"os"
 	"strconv"
@@ -273,6 +274,41 @@ func TestStartRejectsExpiredSessionBeforeRemoteMutation(t *testing.T) {
 	err := startCmd.RunE(startCmd, []string{"expired123"})
 	if err == nil || !strings.Contains(err.Error(), "has expired") {
 		t.Fatalf("expected expired start rejection, got %v", err)
+	}
+}
+
+func TestRollbackStartedTunnelSessionMarksSessionStopped(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	sess := session.TunnelSession{
+		TunnelID:        "rollbackstart",
+		Region:          "https://gzg.sealos.run",
+		Namespace:       "ns-demo",
+		Kubeconfig:      "kubeconfig",
+		Protocol:        "https",
+		Host:            "sealtun-rollbackstart-ns-demo.sealosgzg.site",
+		LocalPort:       "3000",
+		Secret:          "secret",
+		Mode:            "daemon",
+		ConnectionState: session.ConnectionStatePending,
+	}
+	if err := session.Save(sess); err != nil {
+		t.Fatal(err)
+	}
+
+	err := rollbackStartedTunnelSession(sess, fmt.Errorf("daemon failed"))
+	if err == nil || !strings.Contains(err.Error(), "daemon failed") {
+		t.Fatalf("expected original error, got %v", err)
+	}
+	got, err := session.Get(sess.TunnelID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ConnectionState != session.ConnectionStateStopped {
+		t.Fatalf("expected stopped state, got %q", got.ConnectionState)
+	}
+	if got.LastError != "daemon failed" {
+		t.Fatalf("expected last error to preserve cause, got %q", got.LastError)
 	}
 }
 

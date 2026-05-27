@@ -77,7 +77,11 @@ func collectMetricsPayloadWithContext(ctx context.Context, tunnelID string) (*me
 	if err != nil {
 		return nil, err
 	}
-	snapshot := classifySession(*sess, true)
+	return collectMetricsPayloadForSession(ctx, *sess)
+}
+
+func collectMetricsPayloadForSession(ctx context.Context, sess session.TunnelSession) (*metricsPayload, error) {
+	snapshot := classifySession(sess, true)
 	payload := &metricsPayload{
 		TunnelID:       sess.TunnelID,
 		Status:         snapshot.Status,
@@ -92,7 +96,7 @@ func collectMetricsPayloadWithContext(ctx context.Context, tunnelID string) (*me
 	if metricsRemote {
 		remoteCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
 		defer cancel()
-		remote, err := collectRemoteDiagnosticsWithContext(remoteCtx, *sess)
+		remote, err := collectRemoteDiagnosticsWithContext(remoteCtx, sess)
 		if err != nil {
 			payload.Warnings = append(payload.Warnings, fmt.Sprintf("remote metrics unavailable: %v", err))
 		} else {
@@ -101,7 +105,7 @@ func collectMetricsPayloadWithContext(ctx context.Context, tunnelID string) (*me
 		}
 	}
 	if metricsServer {
-		serverMetrics, err := fetchServerMetrics(ctx, *sess)
+		serverMetrics, err := fetchServerMetrics(ctx, sess)
 		if err != nil {
 			payload.Warnings = append(payload.Warnings, fmt.Sprintf("server request counters unavailable: %v", err))
 		} else {

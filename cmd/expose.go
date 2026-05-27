@@ -249,7 +249,7 @@ and establishes a secure connection to forward traffic to your local port.`,
 
 		// 4 & 5. Connect via WebSocket
 		wsURL := fmt.Sprintf("wss://%s/_sealtun/ws", sessionControlHost(sessionRecord))
-		return tunnel.DialServerAndServeWithOnConnected(ctx, wsURL, secret, localPort, func() {
+		return tunnel.DialServerAndServeProtocol(ctx, wsURL, secret, localPort, protocol, func() {
 			current, err := session.Get(tunnelID)
 			if err != nil {
 				return

@@ -169,6 +169,18 @@ func runApply(ctx context.Context, path string, dryRun bool) ([]applyResult, err
 	if err != nil {
 		return nil, err
 	}
+	return runApplyConfig(ctx, config, dryRun)
+}
+
+func runApplyContent(ctx context.Context, data []byte, dryRun bool) ([]applyResult, error) {
+	config, err := loadApplyData("dashboard yaml", data)
+	if err != nil {
+		return nil, err
+	}
+	return runApplyConfig(ctx, config, dryRun)
+}
+
+func runApplyConfig(ctx context.Context, config *applyFile, dryRun bool) ([]applyResult, error) {
 	if len(config.Tunnels) == 0 {
 		return nil, fmt.Errorf("apply file has no tunnels")
 	}
@@ -253,18 +265,25 @@ func loadApplyFile(path string) (*applyFile, error) {
 	if len(data) > applyFileMaxBytes {
 		return nil, fmt.Errorf("apply file %s is too large; limit is %d bytes", path, applyFileMaxBytes)
 	}
+	return loadApplyData(path, data)
+}
+
+func loadApplyData(label string, data []byte) (*applyFile, error) {
+	if len(data) > applyFileMaxBytes {
+		return nil, fmt.Errorf("apply file %s is too large; limit is %d bytes", label, applyFileMaxBytes)
+	}
 	var config applyFile
 	decoder := yaml.NewDecoder(bytes.NewReader(data))
 	decoder.KnownFields(true)
 	if err := decoder.Decode(&config); err != nil {
-		return nil, fmt.Errorf("parse %s: %w", path, err)
+		return nil, fmt.Errorf("parse %s: %w", label, err)
 	}
 	var extra interface{}
 	if err := decoder.Decode(&extra); err != io.EOF {
 		if err != nil {
-			return nil, fmt.Errorf("parse %s: %w", path, err)
+			return nil, fmt.Errorf("parse %s: %w", label, err)
 		}
-		return nil, fmt.Errorf("parse %s: multiple YAML documents are not supported", path)
+		return nil, fmt.Errorf("parse %s: multiple YAML documents are not supported", label)
 	}
 	if config.Version == "" {
 		config.Version = "v1"
@@ -853,6 +872,22 @@ func runDiff(path string) ([]diffResult, error) {
 	if err != nil {
 		return nil, err
 	}
+	return runDiffConfig(config)
+}
+
+func runDiffContent(data []byte) ([]diffResult, error) {
+	config, err := loadApplyData("dashboard yaml", data)
+	if err != nil {
+		return nil, err
+	}
+	return runDiffConfig(config)
+}
+
+func runDiffConfig(config *applyFile) ([]diffResult, error) {
+	return runDiffConfigWithSessionLookup(config, session.Get)
+}
+
+func runDiffConfigWithSessionLookup(config *applyFile, lookup func(string) (*session.TunnelSession, error)) ([]diffResult, error) {
 	if len(config.Tunnels) == 0 {
 		return nil, fmt.Errorf("apply file has no tunnels")
 	}
@@ -874,7 +909,7 @@ func runDiff(path string) ([]diffResult, error) {
 			AccessPolicy: normalized.AccessPolicy != nil,
 			BasicAuth:    normalized.BasicAuth != nil && normalized.BasicAuth.Enabled,
 		}
-		existing, err := session.Get(normalized.TunnelID)
+		existing, err := lookup(normalized.TunnelID)
 		if err == nil {
 			reuseExistingExpiration(&normalized, existing)
 			result.ExpiresAt = normalized.ExpiresAt

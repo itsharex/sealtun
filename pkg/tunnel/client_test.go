@@ -1,8 +1,12 @@
 package tunnel
 
 import (
+	"net"
 	"strings"
 	"testing"
+	"time"
+
+	tunnelprotocol "github.com/labring/sealtun/pkg/protocol"
 )
 
 func TestUnavailableResponse(t *testing.T) {
@@ -27,5 +31,29 @@ func TestUnavailableResponse(t *testing.T) {
 	}
 	if !strings.Contains(response, "<strong>3000</strong>") {
 		t.Fatal("response should mention the local port")
+	}
+}
+
+func TestRawTCPLocalForwardingDoesNotWriteHTTPFallback(t *testing.T) {
+	t.Parallel()
+
+	server, client := net.Pipe()
+	done := make(chan struct{})
+	go func() {
+		handleLocalForwarding(server, "1", tunnelprotocol.TCP)
+		close(done)
+	}()
+
+	buffer := make([]byte, 1)
+	_ = client.SetReadDeadline(time.Now().Add(time.Second))
+	n, err := client.Read(buffer)
+	_ = client.Close()
+	<-done
+
+	if n != 0 {
+		t.Fatalf("raw TCP fallback wrote %d bytes", n)
+	}
+	if err == nil {
+		t.Fatal("expected raw TCP fallback to close without HTTP response bytes")
 	}
 }

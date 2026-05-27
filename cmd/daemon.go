@@ -247,7 +247,7 @@ func runDaemonTunnel(ctx context.Context, sess session.TunnelSession) {
 			err = fmt.Errorf("invalid tunnel control host: %w", hostErr)
 		} else {
 			wsURL := fmt.Sprintf("wss://%s/_sealtun/ws", controlHost)
-			err = tunnel.DialServerAndServeWithOnConnected(ctx, wsURL, current.Secret, current.LocalPort, func() {
+			err = tunnel.DialServerAndServeProtocol(ctx, wsURL, current.Secret, current.LocalPort, current.Protocol, func() {
 				latest, getErr := session.Get(sess.TunnelID)
 				if getErr != nil {
 					return

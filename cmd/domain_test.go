@@ -242,6 +242,33 @@ func TestSessionSupportsCustomDomainAllowsLegacyHTTPS(t *testing.T) {
 	}
 }
 
+func TestVerifySessionDomainRejectsTCPAndSSH(t *testing.T) {
+	for _, protocol := range []string{"ssh", "tcp"} {
+		t.Run(protocol, func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+			if err := session.Save(session.TunnelSession{
+				TunnelID:     "custom-" + protocol,
+				Protocol:     protocol,
+				CustomDomain: "app.example.com",
+				Host:         "app.example.com",
+				SealosHost:   "sealtun-custom-ns.sealosgzg.site",
+				Namespace:    "ns-demo",
+				CreatedAt:    time.Now().Format(time.RFC3339),
+			}); err != nil {
+				t.Fatalf("save session: %v", err)
+			}
+
+			if _, err := verifySessionDomain(context.Background(), "custom-"+protocol); err == nil || !strings.Contains(err.Error(), "https tunnels") {
+				t.Fatalf("expected protocol rejection, got %v", err)
+			}
+			if _, err := waitForSessionDomain(context.Background(), "custom-"+protocol, time.Millisecond); err == nil || !strings.Contains(err.Error(), "https tunnels") {
+				t.Fatalf("expected wait protocol rejection, got %v", err)
+			}
+		})
+	}
+}
+
 func TestCollectDomainStatusFiltersCustomDomains(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

@@ -13,19 +13,26 @@ import (
 
 	"github.com/gorilla/websocket"
 	"github.com/hashicorp/yamux"
+	tunnelprotocol "github.com/labring/sealtun/pkg/protocol"
 )
 
 // DialServerAndServe connects to the tunnel Server and serves local requests
 func DialServerAndServe(ctx context.Context, wsURL, secret, localPort string) error {
-	return dialServerAndServe(ctx, wsURL, secret, localPort, nil)
+	return dialServerAndServe(ctx, wsURL, secret, localPort, tunnelprotocol.HTTPS, nil)
 }
 
 // DialServerAndServeWithOnConnected invokes onConnected after the tunnel handshake succeeds.
 func DialServerAndServeWithOnConnected(ctx context.Context, wsURL, secret, localPort string, onConnected func()) error {
-	return dialServerAndServe(ctx, wsURL, secret, localPort, onConnected)
+	return dialServerAndServe(ctx, wsURL, secret, localPort, tunnelprotocol.HTTPS, onConnected)
 }
 
-func dialServerAndServe(ctx context.Context, wsURL, secret, localPort string, onConnected func()) error {
+// DialServerAndServeProtocol connects to the tunnel Server and serves local
+// requests using protocol-aware fallback behavior.
+func DialServerAndServeProtocol(ctx context.Context, wsURL, secret, localPort, protocol string, onConnected func()) error {
+	return dialServerAndServe(ctx, wsURL, secret, localPort, protocol, onConnected)
+}
+
+func dialServerAndServe(ctx context.Context, wsURL, secret, localPort, protocol string, onConnected func()) error {
 	dialer := websocket.Dialer{
 		HandshakeTimeout: 10 * time.Second,
 	}
@@ -86,14 +93,14 @@ func dialServerAndServe(ctx context.Context, wsURL, secret, localPort string, on
 			return fmt.Errorf("accept stream error: %w", err)
 		}
 
-		go handleLocalForwarding(stream, localPort)
+		go handleLocalForwarding(stream, localPort, protocol)
 	}
 }
 
 var lastWarning time.Time
 var warningMu sync.Mutex
 
-func handleLocalForwarding(stream net.Conn, localPort string) {
+func handleLocalForwarding(stream net.Conn, localPort, protocol string) {
 	defer stream.Close()
 
 	localAddr := fmt.Sprintf("localhost:%s", localPort)
@@ -106,7 +113,9 @@ func handleLocalForwarding(stream net.Conn, localPort string) {
 		}
 		warningMu.Unlock()
 
-		_, _ = io.WriteString(stream, unavailableResponse(localPort))
+		if tunnelprotocol.IsHTTP(protocol) {
+			_, _ = io.WriteString(stream, unavailableResponse(localPort))
+		}
 		return
 	}
 	defer localConn.Close()

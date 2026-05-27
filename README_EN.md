@@ -13,7 +13,7 @@ It connects your local development machine straight to the internet by dynamical
 - 👤 **Named Profiles**: Save different Sealos accounts, regions, workspaces, and kubeconfigs as named profiles and switch between them.
 - 🚀 **One-Command Expose**: Execute `sealtun expose 8080`, and get a fully trusted HTTPS URL for your localhost securely routed.
 - 🌐 **Custom Domain Automation**: Use `domain plan/add/verify/status/doctor` to generate CNAME guidance, wait for DNS, attach domains, and inspect certificate readiness.
-- 📊 **Status and Diagnostics**: Use `doctor <tunnel-id>`, `inspect --remote`, `logs`, `events`, and `metrics` to diagnose local ports, daemon state, remote Pods, Services, Ingresses, and certificates.
+- 📊 **Status, Diagnostics, and Workbench**: Use `doctor <tunnel-id>`, `inspect --remote`, `logs`, `events`, `metrics`, and `dashboard` to diagnose local ports, daemon state, remote Pods, Services, Ingresses, and certificates, or manage tunnels from the local workbench.
 - 🧩 **Protocol Templates**: Use `template https|ssh|tcp|mysql|postgres|redis|mqtt` to generate commands and `sealtun.yaml` examples.
 - 🧾 **Declarative Config**: Use `apply -f sealtun.yaml` to declare tunnels in YAML and create or update them with stable names.
 - 🌐 **Optimized for Sealos**: Native support for Sealos Cloud domains, HTTPS traffic, and WebSocket tunnels.
@@ -314,7 +314,7 @@ sealtun doctor <tunnel-id> --json
 
 `metrics` combines local session state, remote Deployment/Pod/Ingress readiness, and server-side request counters when the remote pod supports the Bearer-secret-protected `/_sealtun/metrics` endpoint. TCP/SSH tunnels also expose TCP connection, active connection, byte, and error counters.
 
-Run the local read-only dashboard:
+Run the local workbench:
 ```bash
 sealtun dashboard
 
@@ -322,7 +322,14 @@ sealtun dashboard
 sealtun dashboard --addr 127.0.0.1 --port 19777
 ```
 
-The dashboard listens locally and reads the same data as the CLI: local sessions, login state, remote diagnostics, and custom domain readiness.
+The dashboard listens locally by default and uses only the current active profile/region/namespace. It reads local sessions, login state, remote diagnostics, and custom domain readiness. The page can create HTTPS/SSH/TCP tunnels, run `sealtun.yaml` dry-run/diff/apply, stop/start/cleanup tunnels, view logs/metrics/events, and run domain plan/add/verify/clear.
+
+```bash
+# Allow remote access to the workbench; use only on trusted networks
+sealtun dashboard --addr 0.0.0.0 --allow-remote
+```
+
+Remote mode does not embed the dashboard token in HTML; callers need the URL fragment token or request header. Every mutating action requires a page confirmation and a backend-validated `confirm` field to avoid accidental clicks or scripted misuse.
 
 ### 7. Protocol templates
 When you are unsure which command or declarative config to use, generate a template first:

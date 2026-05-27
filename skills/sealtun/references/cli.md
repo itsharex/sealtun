@@ -204,6 +204,7 @@ sealtun events <tunnel-id> --json
 
 sealtun dashboard
 sealtun dashboard --addr 127.0.0.1 --port 19777
+sealtun dashboard --addr 0.0.0.0 --allow-remote
 
 sealtun doctor
 sealtun doctor <tunnel-id>
@@ -211,7 +212,9 @@ sealtun doctor --json
 sealtun doctor <tunnel-id> --json
 ```
 
-Dashboard is local and read-only by default. `--allow-remote` allows a non-loopback dashboard address and should be treated as a security-sensitive choice.
+Dashboard is a local workbench by default. It can create HTTPS/SSH/TCP tunnels, run YAML dry-run/diff/apply, stop/start/cleanup tunnels, show logs/metrics/events, and run domain plan/add/verify/clear. It uses only the current active profile/region/namespace and does not switch login scope.
+
+Every dashboard API request requires the dashboard token. Mutating actions require a confirmation in the page and a backend `confirm` value such as `stop:<tunnel-id>` or `apply:dashboard-yaml`. `--allow-remote` allows a non-loopback dashboard address and should be treated as a security-sensitive choice; remote mode does not embed the token in HTML.
 
 Use `doctor <tunnel-id>` for "why can't I connect" issues. It checks the local session, owner process or daemon, local target port, remote resources where credentials are available, and prints next-step suggestions.
 

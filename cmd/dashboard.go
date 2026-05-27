@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	brandassets "github.com/labring/sealtun/assets"
@@ -37,7 +38,8 @@ type dashboardContextPayload struct {
 }
 
 type dashboardPageData struct {
-	Token string
+	Token  string
+	Remote bool
 }
 
 type dashboardServer struct {
@@ -94,6 +96,7 @@ func runDashboard(ctx context.Context, addr string, port int, allowRemote bool) 
 	mux.HandleFunc("/logo.svg", serveDashboardFavicon)
 	mux.HandleFunc("/api/summary", handler.serveDashboardSummary)
 	mux.HandleFunc("/api/context", handler.serveContext)
+	mux.HandleFunc("/api/", handler.serveAPI)
 
 	server := &http.Server{
 		Addr:              net.JoinHostPort(addr, strconv.Itoa(port)),
@@ -147,7 +150,8 @@ func (s dashboardServer) serveHome(w http.ResponseWriter, r *http.Request) {
 		pageToken = s.token
 	}
 	_ = dashboardHTML.Execute(w, dashboardPageData{
-		Token: pageToken,
+		Token:  pageToken,
+		Remote: !s.embedToken,
 	})
 }
 
@@ -211,6 +215,10 @@ func (s dashboardServer) requireToken(w http.ResponseWriter, r *http.Request) bo
 	got := r.Header.Get("X-Sealtun-Dashboard-Token")
 	if got != "" && subtle.ConstantTimeCompare([]byte(got), []byte(s.token)) == 1 {
 		return true
+	}
+	if strings.HasPrefix(r.URL.Path, "/api/") {
+		writeDashboardError(w, http.StatusForbidden, "invalid dashboard token")
+		return false
 	}
 	http.Error(w, "invalid dashboard token", http.StatusForbidden)
 	return false
@@ -693,6 +701,38 @@ var dashboardHTML = template.Must(template.New("dashboard").Parse(`<!doctype htm
     .btn:active { transform: translateY(1px); }
     .btn:disabled { opacity: .62; cursor: wait; }
     .btn svg { width: 16px; height: 16px; }
+    .btn.primary {
+      border-color: #007a62;
+      background: #007a62;
+      color: #ffffff;
+    }
+    .btn.danger {
+      border-color: #f1c1c5;
+      color: var(--bad);
+    }
+    .remote-warning {
+      display: none;
+      margin-bottom: 14px;
+      padding: 12px 14px;
+      border: 1px solid #f3d993;
+      border-radius: 8px;
+      background: #fff8e6;
+      color: #7a5600;
+      font-size: 13px;
+    }
+    .remote-warning[data-visible="true"] { display: block; }
+    .toolbar {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 14px;
+    }
+    .toolbar-actions {
+      display: inline-flex;
+      gap: 10px;
+      align-items: center;
+    }
     .body {
       display: grid;
       grid-template-columns: minmax(0, 1fr) 360px;
@@ -867,6 +907,7 @@ var dashboardHTML = template.Must(template.New("dashboard").Parse(`<!doctype htm
       font-size: 12px;
       font-weight: 600;
     }
+    .action-text.danger { color: var(--bad); }
     .icon-btn {
       width: 24px;
       height: 24px;
@@ -1114,6 +1155,104 @@ var dashboardHTML = template.Must(template.New("dashboard").Parse(`<!doctype htm
       margin-bottom: 8px;
       font-size: 15px;
     }
+    .modal-backdrop {
+      position: fixed;
+      inset: 0;
+      z-index: 50;
+      background: rgba(23,23,23,.32);
+      display: grid;
+      place-items: center;
+      padding: 28px;
+    }
+    .modal-backdrop[hidden] { display: none; }
+    .modal {
+      width: min(760px, 100%);
+      max-height: calc(100dvh - 56px);
+      overflow: auto;
+      border-radius: 10px;
+      background: #ffffff;
+      box-shadow: 0 30px 80px rgba(0,0,0,.22);
+      border: 1px solid var(--line-strong);
+    }
+    .modal-head {
+      height: 58px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 18px;
+      border-bottom: 1px solid var(--line);
+    }
+    .modal-title {
+      color: var(--ink);
+      font-weight: 700;
+    }
+    .modal-body {
+      padding: 18px;
+      display: grid;
+      gap: 14px;
+    }
+    .form-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+    }
+    .field {
+      display: grid;
+      gap: 6px;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 650;
+    }
+    .field.full { grid-column: 1 / -1; }
+    .input, .select, .textarea {
+      width: 100%;
+      border: 1px solid var(--line-strong);
+      border-radius: 7px;
+      background: #ffffff;
+      color: var(--ink);
+      font: 13px var(--sans);
+      padding: 9px 10px;
+      outline: none;
+    }
+    .textarea {
+      min-height: 280px;
+      resize: vertical;
+      font-family: var(--mono);
+      line-height: 1.55;
+    }
+    .template-pills {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+    .pill {
+      min-height: 30px;
+      padding: 0 10px;
+      border: 1px solid var(--line-strong);
+      border-radius: 7px;
+      background: #fbfaf7;
+      font-size: 12px;
+      color: var(--ink);
+    }
+    .modal-actions {
+      display: flex;
+      justify-content: flex-end;
+      gap: 10px;
+      padding: 14px 18px 18px;
+      border-top: 1px solid var(--line);
+    }
+    .result-box {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fbfaf7;
+      padding: 12px;
+      font-family: var(--mono);
+      font-size: 12px;
+      line-height: 1.55;
+      white-space: pre-wrap;
+      max-height: 260px;
+      overflow: auto;
+    }
   </style>
 </head>
 <body>
@@ -1152,6 +1291,14 @@ var dashboardHTML = template.Must(template.New("dashboard").Parse(`<!doctype htm
 
     <div class="body">
       <main class="main">
+        <div class="remote-warning" id="remote-warning" data-visible="{{ .Remote }}">Remote dashboard mode is enabled. Mutating operations are allowed here, but every write action requires confirmation.</div>
+        <div class="toolbar">
+          <div class="section-title">Workspace</div>
+          <div class="toolbar-actions">
+            <button class="btn primary" id="new-tunnel-btn" type="button">New Tunnel</button>
+            <button class="btn" id="apply-yaml-btn" type="button">Apply YAML</button>
+          </div>
+        </div>
         <section class="cards" id="cards"></section>
 
         <section class="section">
@@ -1165,6 +1312,7 @@ var dashboardHTML = template.Must(template.New("dashboard").Parse(`<!doctype htm
         <nav class="tabs" aria-label="Tunnel tools">
           <button class="tab active" data-tab="logs" type="button">Logs</button>
           <button class="tab" data-tab="metrics" type="button">Metrics</button>
+          <button class="tab" data-tab="events" type="button">Events</button>
           <button class="tab" data-tab="domain" type="button">Domain</button>
           <button class="tab" data-tab="config" type="button">Config</button>
         </nav>
@@ -1182,9 +1330,11 @@ var dashboardHTML = template.Must(template.New("dashboard").Parse(`<!doctype htm
     </div>
   </div>
   <div class="toast" id="toast" hidden></div>
+  <div class="modal-backdrop" id="modal-backdrop" hidden></div>
 
   <script>
     const embeddedDashboardToken = "{{ .Token }}";
+    const remoteDashboardMode = "{{ .Remote }}" === "true";
     const tokenFromHash = new URLSearchParams(window.location.hash.replace(/^#/, "")).get("token") || "";
     if (tokenFromHash) {
       sessionStorage.setItem("sealtunDashboardToken", tokenFromHash);
@@ -1197,6 +1347,7 @@ var dashboardHTML = template.Must(template.New("dashboard").Parse(`<!doctype htm
     let activeTab = "logs";
     let openMenu = "";
     let refreshInFlight = null;
+    let tabDataCache = {};
 
 	    const esc = (v) => String(v ?? "").replace(/[&<>"']/g, ch => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;" }[ch]));
 	    const dnsHostPattern = /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/i;
@@ -1234,6 +1385,15 @@ var dashboardHTML = template.Must(template.New("dashboard").Parse(`<!doctype htm
     const terminalIcon = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="m4 7 5 5-5 5"/><path d="M12 19h8"/></svg>';
     const metricsIcon = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M5 19V9"/><path d="M12 19V5"/><path d="M19 19v-7"/><path d="M3 19h18"/></svg>';
     const globeIcon = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="M3 12h18"/><path d="M12 3c2.4 2.5 3.6 5.5 3.6 9S14.4 18.5 12 21c-2.4-2.5-3.6-5.5-3.6-9S9.6 5.5 12 3Z"/></svg>';
+    const protocolDefaults = {
+      https: { name: "web", port: 3000, protocol: "https" },
+      ssh: { name: "ssh", port: 22, protocol: "ssh" },
+      tcp: { name: "tcp", port: 9000, protocol: "tcp" },
+      mysql: { name: "mysql", port: 3306, protocol: "tcp" },
+      postgres: { name: "postgres", port: 5432, protocol: "tcp" },
+      redis: { name: "redis", port: 6379, protocol: "tcp" },
+      mqtt: { name: "mqtt", port: 1883, protocol: "tcp" }
+    };
 
     function render(data) {
       snapshot = data;
@@ -1414,6 +1574,7 @@ var dashboardHTML = template.Must(template.New("dashboard").Parse(`<!doctype htm
             '<td class="mono muted">' + esc(shortDate(t.createdAt)) + '</td>' +
             '<td><div class="actions">' +
               '<button class="action-text" data-select="' + esc(t.tunnelId) + '">Inspect</button>' +
+              tunnelActionButtons(t) +
               '<button class="icon-btn" data-copy="sealtun logs ' + esc(t.tunnelId) + ' --tail 200">' + terminalIcon + '</button>' +
               '<button class="icon-btn" data-copy="sealtun metrics ' + esc(t.tunnelId) + '">' + metricsIcon + '</button>' +
               '<button class="icon-btn" data-copy="sealtun domain doctor ' + esc(t.tunnelId) + '">' + globeIcon + '</button>' +
@@ -1421,6 +1582,16 @@ var dashboardHTML = template.Must(template.New("dashboard").Parse(`<!doctype htm
           '</tr>';
         }).join("") +
         '</tbody></table>';
+    }
+
+    function tunnelActionButtons(t) {
+      const id = esc(t.tunnelId);
+      const status = t.status || "";
+      let buttons = "";
+      if (status === "stopped") buttons += '<button class="action-text" data-action="start" data-tunnel="' + id + '">Start</button>';
+      if (status !== "stopped" && status !== "stale") buttons += '<button class="action-text" data-action="stop" data-tunnel="' + id + '">Stop</button>';
+      if (status === "stopped" || status === "stale" || status === "error") buttons += '<button class="action-text danger" data-action="cleanup" data-tunnel="' + id + '">Cleanup</button>';
+      return buttons;
     }
 
     function renderInspect() {
@@ -1438,6 +1609,7 @@ var dashboardHTML = template.Must(template.New("dashboard").Parse(`<!doctype htm
 	        '<div class="inspect-head"><div class="inspect-title">Inspect <span class="tag">' + esc(t.tunnelId) + '</span></div><button class="close" type="button">x</button></div>' +
 	        '<div class="inspect-body">' +
 	          '<div class="inspect-summary"><div class="status ' + cls + '"><span class="dot"></span>' + esc(title(t.status)) + '</div>' + hostLink(t, "inspect-url") + '</div>' +
+            '<div class="inspect-group"><div class="group-title">Actions</div><div class="actions">' + tunnelActionButtons(t) + '</div></div>' +
 	          group("Connection", [
 	            [t.protocol === "ssh" ? "Public SSH" : (t.protocol === "tcp" ? "Public TCP" : "Public URL"), publicEndpointFor(t) || "-", true],
 	            ["CNAME Target", cname || "-", true],
@@ -1470,31 +1642,60 @@ var dashboardHTML = template.Must(template.New("dashboard").Parse(`<!doctype htm
       }
       if (activeTab === "logs") target.innerHTML = logsPanel(t);
       if (activeTab === "metrics") target.innerHTML = metricsPanel(t);
+      if (activeTab === "events") target.innerHTML = eventsPanel(t);
       if (activeTab === "domain") target.innerHTML = domainPanel(t);
       if (activeTab === "config") target.innerHTML = configPanel(t);
+      loadActiveTabData(t).catch(err => showToast(err.message || String(err), true));
+    }
+
+    function tabCache(t, key) {
+      return tabDataCache[t?.tunnelId + ":" + key];
+    }
+
+    function setTabCache(t, key, data) {
+      tabDataCache[t?.tunnelId + ":" + key] = data;
+    }
+
+    async function loadActiveTabData(t) {
+      if (!t || activeTab === "domain" || activeTab === "config") return;
+      if (tabCache(t, activeTab)) return;
+      const id = encodeURIComponent(t.tunnelId);
+      let data;
+      if (activeTab === "logs") data = await apiFetch("/api/tunnels/" + id + "/logs?tail=200");
+      if (activeTab === "metrics") data = await apiFetch("/api/tunnels/" + id + "/metrics");
+      if (activeTab === "events") data = await apiFetch("/api/tunnels/" + id + "/events");
+      setTabCache(t, activeTab, data);
+      if (selected()?.tunnelId === t.tunnelId) {
+        renderTab();
+        wire();
+      }
     }
 
 	    function logsPanel(t) {
-	      const endpoint = publicEndpointFor(t) || publicHostFor(t) || "-";
-	      return '<div class="log-box">' +
-        line("17:06:33", "INFO", "Tunnel snapshot loaded for " + t.tunnelId) +
-        line("17:07:33", "INFO", "Forwarding localhost:" + (t.localPort || "-") + " -> " + endpoint) +
-        line("17:08:33", "DEBUG", "Run: sealtun logs " + t.tunnelId + " --tail 200") +
-        line("17:09:33", "INFO", "Run: sealtun metrics " + t.tunnelId) +
-        (t.status === "degraded" ? line("17:11:33", "WARN", "Local port is not reachable") : line("17:11:33", "INFO", "Local tunnel status is " + t.status)) +
-      '</div>';
+	      return '<div class="log-box" id="logs-box">' + esc(tabCache(t, "logs")?.text || "Loading logs...") + '</div>';
     }
 
     function metricsPanel(t) {
-      const d = snapshot?.doctor || {};
+      const data = tabCache(t, "metrics");
+      if (!data) return '<div class="empty"><div><strong>Loading metrics</strong><div>Fetching remote and server counters.</div></div></div>';
+      const remote = data.remote || {};
+      const server = data.server || {};
       return '<div class="panel-grid">' +
-        small("Status", title(t.status)) +
-        small("Local Target", "localhost:" + (t.localPort || "-")) +
-        small("Mode", t.mode || "-") +
-        small("Remote Checks", d.remoteChecked || 0) +
-        small("Remote Issues", d.remoteIssues || 0) +
-        small("Reachable Ports", d.reachableActivePorts || 0) +
+        small("Status", data.status || title(t.status)) +
+        small("Local Target", "localhost:" + (data.localPort || t.localPort || "-")) +
+        small("Remote Ready", remote.deploymentReady || "-") +
+        small("Pods", String(remote.readyPods || 0) + "/" + String(remote.podCount || 0)) +
+        small("Requests", server.totalRequests ?? "-") +
+        small("Active", server.activeRequests ?? server.activeTCPConnections ?? "-") +
       '</div>';
+    }
+
+    function eventsPanel(t) {
+      const data = tabCache(t, "events");
+      if (!data) return '<div class="empty"><div><strong>Loading events</strong><div>Fetching recent Kubernetes events.</div></div></div>';
+      const events = data.events || [];
+      if (!events.length) return '<div class="empty"><div><strong>No recent events</strong><div>Kubernetes did not report recent tunnel events.</div></div></div>';
+      return '<div class="log-box">' + events.map(ev => line((ev.lastTimestamp || ev.firstTimestamp || "").slice(11, 19) || "--:--:--", ev.type || "Event", (ev.reason || "Event") + " " + (ev.object || "-") + ": " + (ev.message || ""))).join("") + '</div>';
     }
 
 	    function domainPanel(t) {
@@ -1512,18 +1713,20 @@ var dashboardHTML = template.Must(template.New("dashboard").Parse(`<!doctype htm
         return '<div class="panel-grid">' +
           small("Custom Domain", "Not configured") +
           small("CNAME Target", host) +
-          small("Command", "sealtun domain set " + t.tunnelId + " app.example.com") +
+          '<div class="small-card"><div class="label">Actions</div><div class="actions"><button class="btn" data-domain-action="plan" data-tunnel="' + esc(t.tunnelId) + '" type="button">Plan</button><button class="btn" data-domain-action="add" data-tunnel="' + esc(t.tunnelId) + '" type="button">Add</button></div></div>' +
         '</div>';
       }
       return '<div class="panel-grid">' +
         small("Custom Domain", item?.customDomain || t.customDomain || "-") +
         small("DNS Ready", item?.dnsReady ? "Yes" : "Pending") +
         small("Certificate", item?.certificateReady ? "Ready" : "Pending") +
+        '<div class="small-card"><div class="label">Actions</div><div class="actions"><button class="btn" data-domain-action="plan" data-tunnel="' + esc(t.tunnelId) + '" type="button">Plan</button><button class="btn" data-domain-action="verify" data-tunnel="' + esc(t.tunnelId) + '" type="button">Verify</button><button class="btn danger" data-domain-action="clear" data-tunnel="' + esc(t.tunnelId) + '" type="button">Clear</button></div></div>' +
       '</div>';
     }
 
     function configPanel(t) {
-      return '<pre class="yaml">version: v1\ntunnels:\n  - name: ' + esc(t.tunnelId) + '\n    localPort: ' + esc(t.localPort || "3000") + '\n    protocol: ' + esc(t.protocol || "https") + (t.customDomain ? '\n    domain: ' + esc(t.customDomain) : '') + '\n    readyTimeout: 90s</pre>';
+      const yaml = 'version: v1\ntunnels:\n  - name: ' + (t.tunnelId || "web") + '\n    localPort: ' + (t.localPort || "3000") + '\n    protocol: ' + (t.protocol || "https") + (t.customDomain ? '\n    domain: ' + t.customDomain : '') + '\n    readyTimeout: 90s';
+      return '<pre class="yaml">' + esc(yaml) + '</pre><div class="modal-actions"><button class="btn" data-copy="' + esc(yaml) + '">Copy YAML</button><button class="btn primary" data-open-apply="' + esc(t.tunnelId) + '">Open in Apply YAML</button></div>';
     }
 
     function group(titleText, rows) {
@@ -1603,6 +1806,200 @@ var dashboardHTML = template.Must(template.New("dashboard").Parse(`<!doctype htm
           copyText(el.getAttribute("data-copy") || "");
         };
       });
+      document.querySelectorAll("[data-action]").forEach(el => {
+        el.onclick = () => runTunnelAction(el.getAttribute("data-action") || "", el.getAttribute("data-tunnel") || "");
+      });
+      document.querySelectorAll("[data-domain-action]").forEach(el => {
+        el.onclick = () => runDomainAction(el.getAttribute("data-domain-action") || "", el.getAttribute("data-tunnel") || "");
+      });
+      document.querySelectorAll("[data-open-apply]").forEach(el => {
+        el.onclick = () => openApplyModal(configYAMLFor(tunnelByID(el.getAttribute("data-open-apply") || "") || selected()));
+      });
+    }
+
+    async function apiFetch(path, options = {}) {
+      const headers = Object.assign({ "X-Sealtun-Dashboard-Token": dashboardToken }, options.headers || {});
+      if (options.body && !headers["Content-Type"]) headers["Content-Type"] = "application/json";
+      const res = await fetch(path, Object.assign({ cache: "no-store", headers }, options));
+      const payload = await res.json().catch(() => ({}));
+      if (!res.ok || payload.ok === false) throw new Error(payload.error || ("Dashboard API returned " + res.status));
+      return payload.data;
+    }
+
+    function postJSON(path, body) {
+      return apiFetch(path, { method: "POST", body: JSON.stringify(body || {}) });
+    }
+
+    function confirmPayload(action, target, label) {
+      const confirm = action + ":" + target;
+      if (!window.confirm((label || "Run action") + "\n\nConfirm: " + confirm)) return "";
+      return confirm;
+    }
+
+    async function runTunnelAction(action, tunnelID) {
+      if (!action || !tunnelID) return;
+      const confirm = confirmPayload(action, tunnelID, title(action) + " tunnel " + tunnelID);
+      if (!confirm) return;
+      try {
+        await postJSON("/api/tunnels/" + encodeURIComponent(tunnelID) + "/" + action, { confirm });
+        showToast(title(action) + " completed");
+        tabDataCache = {};
+        await refresh();
+      } catch (err) {
+        showToast(err.message || String(err), true);
+      }
+    }
+
+    async function runDomainAction(action, tunnelID) {
+      if (!action || !tunnelID) return;
+      const path = "/api/tunnels/" + encodeURIComponent(tunnelID) + "/domain/" + action;
+      let body = {};
+      if (action === "add" || action === "plan") {
+        const domain = window.prompt("Custom domain");
+        if (!domain) return;
+        body.domain = domain.trim();
+      }
+      if (action === "add" || action === "clear") {
+        const confirm = confirmPayload("domain-" + action, tunnelID, title(action) + " custom domain");
+        if (!confirm) return;
+        body.confirm = confirm;
+      }
+      if (action === "verify" && window.confirm("Wait until the domain is ready?")) {
+        body.wait = true;
+        body.confirm = confirmPayload("domain-verify", tunnelID, "Wait for domain verification");
+        if (!body.confirm) return;
+      }
+      try {
+        const data = await postJSON(path, body);
+        showToast("Domain " + action + " completed");
+        if (data) openResultModal("Domain " + title(action), data);
+        await refresh();
+      } catch (err) {
+        showToast(err.message || String(err), true);
+      }
+    }
+
+    function configYAMLFor(t) {
+      if (!t) return "version: v1\ntunnels:\n  - name: web\n    localPort: 3000\n    protocol: https\n";
+      return "version: v1\ntunnels:\n  - name: " + (t.tunnelId || "web") + "\n    localPort: " + (t.localPort || "3000") + "\n    protocol: " + (t.protocol || "https") + (t.customDomain ? "\n    domain: " + t.customDomain : "") + "\n    readyTimeout: 90s\n";
+    }
+
+    function modal(titleText, bodyHTML, actionsHTML) {
+      const backdrop = document.getElementById("modal-backdrop");
+      backdrop.innerHTML =
+        '<div class="modal" role="dialog" aria-modal="true">' +
+          '<div class="modal-head"><div class="modal-title">' + esc(titleText) + '</div><button class="close" data-modal-close type="button">x</button></div>' +
+          '<div class="modal-body">' + bodyHTML + '</div>' +
+          '<div class="modal-actions">' + (actionsHTML || '<button class="btn" data-modal-close type="button">Close</button>') + '</div>' +
+        '</div>';
+      backdrop.hidden = false;
+      backdrop.querySelectorAll("[data-modal-close]").forEach(btn => btn.onclick = closeModal);
+      return backdrop;
+    }
+
+    function closeModal() {
+      const backdrop = document.getElementById("modal-backdrop");
+      backdrop.hidden = true;
+      backdrop.innerHTML = "";
+    }
+
+    function openResultModal(titleText, data) {
+      modal(titleText, '<pre class="result-box">' + esc(JSON.stringify(data, null, 2)) + '</pre>');
+    }
+
+    function openNewTunnelModal(template = "https") {
+      const defaults = protocolDefaults[template] || protocolDefaults.https;
+      const body =
+        '<div class="template-pills">' + Object.keys(protocolDefaults).map(key => '<button class="pill" data-template="' + esc(key) + '" type="button">' + esc(key.toUpperCase()) + '</button>').join("") + '</div>' +
+        '<div class="form-grid">' +
+          '<label class="field">Name<input class="input" id="new-name" value="' + esc(defaults.name) + '"></label>' +
+          '<label class="field">Protocol<select class="select" id="new-protocol"><option value="https">https</option><option value="ssh">ssh</option><option value="tcp">tcp</option></select></label>' +
+          '<label class="field">Local Port<input class="input" id="new-port" type="number" min="1" max="65535" value="' + esc(defaults.port) + '"></label>' +
+          '<label class="field" data-http-field>Domain<input class="input" id="new-domain" placeholder="app.example.com"></label>' +
+          '<label class="field" data-http-field>Basic Auth<input class="input" id="new-basic-auth" placeholder="user:password"></label>' +
+          '<label class="field" data-http-field>Bearer Token<input class="input" id="new-bearer" placeholder="optional"></label>' +
+          '<label class="field" data-http-field>IP Allowlist<input class="input" id="new-allow" placeholder="1.2.3.4, 10.0.0.0/8"></label>' +
+          '<label class="field" data-http-field>IP Denylist<input class="input" id="new-deny" placeholder="optional"></label>' +
+          '<label class="field" data-http-field>Temporary Token<input class="input" id="new-temp-token" placeholder="optional"></label>' +
+          '<label class="field" data-http-field>Temporary TTL<input class="input" id="new-temp-ttl" placeholder="1h"></label>' +
+        '</div>' +
+        '<pre class="result-box" id="new-result">Ready.</pre>';
+      const backdrop = modal("New Tunnel", body, '<button class="btn" data-modal-close type="button">Cancel</button><button class="btn primary" id="create-tunnel" type="button">Create</button>');
+      const updateProtocolFields = () => {
+        const isHTTPS = document.getElementById("new-protocol").value === "https";
+        backdrop.querySelectorAll("[data-http-field] input").forEach(input => {
+          input.disabled = !isHTTPS;
+          if (!isHTTPS) input.value = "";
+        });
+      };
+      const setTemplate = (key) => {
+        const item = protocolDefaults[key] || protocolDefaults.https;
+        document.getElementById("new-name").value = item.name;
+        document.getElementById("new-port").value = item.port;
+        document.getElementById("new-protocol").value = item.protocol;
+        updateProtocolFields();
+      };
+      setTemplate(template);
+      backdrop.querySelectorAll("[data-template]").forEach(btn => btn.onclick = () => setTemplate(btn.getAttribute("data-template")));
+      document.getElementById("new-protocol").onchange = updateProtocolFields;
+      document.getElementById("create-tunnel").onclick = async () => {
+        const name = document.getElementById("new-name").value.trim();
+        const target = name || "dashboard-tunnel";
+        const confirm = confirmPayload("create", target, "Create tunnel");
+        if (!confirm) return;
+        const splitList = (id) => document.getElementById(id).value.split(",").map(x => x.trim()).filter(Boolean);
+        const body = {
+          confirm,
+          name,
+          protocol: document.getElementById("new-protocol").value,
+          localPort: Number(document.getElementById("new-port").value),
+          domain: document.getElementById("new-domain").value.trim(),
+          basicAuth: document.getElementById("new-basic-auth").value.trim(),
+          bearerToken: document.getElementById("new-bearer").value.trim(),
+          ipAllowlist: splitList("new-allow"),
+          ipDenylist: splitList("new-deny"),
+          temporaryAccessToken: document.getElementById("new-temp-token").value.trim(),
+          temporaryAccessTTL: document.getElementById("new-temp-ttl").value.trim()
+        };
+        try {
+          const data = await postJSON("/api/tunnels", body);
+          document.getElementById("new-result").textContent = JSON.stringify(data, null, 2);
+          tabDataCache = {};
+          await refresh();
+        } catch (err) {
+          document.getElementById("new-result").textContent = err.message || String(err);
+        }
+      };
+    }
+
+    function openApplyModal(initialYAML = "") {
+      const body =
+        '<label class="field full">sealtun.yaml<textarea class="textarea" id="apply-yaml">' + esc(initialYAML || "version: v1\ntunnels:\n  - name: web\n    localPort: 3000\n    protocol: https\n") + '</textarea></label>' +
+        '<pre class="result-box" id="apply-result">Ready.</pre>';
+      modal("Apply YAML", body, '<button class="btn" data-modal-close type="button">Close</button><button class="btn" id="apply-dry-run" type="button">Dry Run</button><button class="btn" id="apply-diff" type="button">Diff</button><button class="btn primary" id="apply-run" type="button">Apply</button>');
+      const run = async (kind) => {
+        const yaml = document.getElementById("apply-yaml").value;
+        const body = { yaml };
+        let path = "/api/apply/" + kind;
+        if (kind === "apply") {
+          path = "/api/apply";
+          body.confirm = confirmPayload("apply", "dashboard-yaml", "Apply YAML");
+          if (!body.confirm) return;
+        }
+        try {
+          const data = await postJSON(path, body);
+          document.getElementById("apply-result").textContent = JSON.stringify(data, null, 2);
+          if (kind === "apply") {
+            tabDataCache = {};
+            await refresh();
+          }
+        } catch (err) {
+          document.getElementById("apply-result").textContent = err.message || String(err);
+        }
+      };
+      document.getElementById("apply-dry-run").onclick = () => run("dry-run");
+      document.getElementById("apply-diff").onclick = () => run("diff");
+      document.getElementById("apply-run").onclick = () => run("apply");
     }
 
     async function copyText(text) {
@@ -1632,6 +2029,8 @@ var dashboardHTML = template.Must(template.New("dashboard").Parse(`<!doctype htm
     }
 
     document.getElementById("refresh-btn").onclick = refresh;
+    document.getElementById("new-tunnel-btn").onclick = () => openNewTunnelModal();
+    document.getElementById("apply-yaml-btn").onclick = () => openApplyModal(configYAMLFor(selected()));
     document.addEventListener("click", event => {
       if (!event.target.closest(".context-wrap")) closeContextMenus();
     });

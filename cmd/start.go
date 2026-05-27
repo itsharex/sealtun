@@ -26,25 +26,7 @@ var startCmd = &cobra.Command{
 			return fmt.Errorf("tunnel %s has expired; run cleanup and recreate the tunnel", sess.TunnelID)
 		}
 
-		ctx, cancel := context.WithTimeout(cmd.Context(), 30*time.Second)
-		defer cancel()
-
-		if err := resumeSessionResources(ctx, *sess); err != nil {
-			return fmt.Errorf("resume tunnel %s: %w", sess.TunnelID, err)
-		}
-
-		sess.Mode = "daemon"
-		sess.PID = 0
-		sess.ConnectionState = session.ConnectionStatePending
-		sess.LastError = ""
-		if err := session.Update(*sess); err != nil {
-			return fmt.Errorf("update local session %s: %w", sess.TunnelID, err)
-		}
-
-		if err := ensureDaemonRunning(); err != nil {
-			return err
-		}
-		if err := waitForDaemonSession(sess.TunnelID, daemonConnectTimeout); err != nil {
+		if err := startTunnelSession(cmd.Context(), sess); err != nil {
 			return err
 		}
 		ensureSessionPublicPort(cmd.Context(), sess)
@@ -73,4 +55,45 @@ var startCmd = &cobra.Command{
 
 func init() {
 	rootCmd.AddCommand(startCmd)
+}
+
+func startTunnelSession(ctx context.Context, sess *session.TunnelSession) error {
+	resumeCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	if err := resumeSessionResources(resumeCtx, *sess); err != nil {
+		return fmt.Errorf("resume tunnel %s: %w", sess.TunnelID, err)
+	}
+
+	sess.Mode = "daemon"
+	sess.PID = 0
+	sess.ConnectionState = session.ConnectionStatePending
+	sess.LastError = ""
+	if err := session.Update(*sess); err != nil {
+		return fmt.Errorf("update local session %s: %w", sess.TunnelID, err)
+	}
+
+	if err := ensureDaemonRunning(); err != nil {
+		return rollbackStartedTunnelSession(*sess, fmt.Errorf("failed to start local daemon: %w", err))
+	}
+	if err := waitForDaemonSession(sess.TunnelID, daemonConnectTimeout); err != nil {
+		return rollbackStartedTunnelSession(*sess, err)
+	}
+	return nil
+}
+
+func rollbackStartedTunnelSession(sess session.TunnelSession, cause error) error {
+	pauseCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	rollbackErr := pauseSessionResources(pauseCtx, sess)
+	sess.PID = 0
+	sess.ConnectionState = session.ConnectionStateStopped
+	sess.LastError = cause.Error()
+	updateErr := session.Update(sess)
+	if rollbackErr != nil {
+		return fmt.Errorf("%w; rollback to stopped state failed: %v", cause, rollbackErr)
+	}
+	if updateErr != nil {
+		return fmt.Errorf("%w; rollback session update failed: %v", cause, updateErr)
+	}
+	return cause
 }

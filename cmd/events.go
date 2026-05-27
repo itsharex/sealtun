@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/labring/sealtun/pkg/k8s"
+	"github.com/labring/sealtun/pkg/session"
 	"github.com/spf13/cobra"
 )
 
@@ -56,9 +57,13 @@ func collectEventsPayloadWithContext(ctx context.Context, tunnelID string, timeo
 	if err != nil {
 		return nil, err
 	}
+	return collectEventsPayloadForSession(ctx, *sess, timeout)
+}
+
+func collectEventsPayloadForSession(ctx context.Context, sess session.TunnelSession, timeout time.Duration) (*eventsPayload, error) {
 	remoteCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	diag, err := collectRemoteDiagnosticsWithContext(remoteCtx, *sess)
+	diag, err := collectRemoteDiagnosticsWithContext(remoteCtx, sess)
 	payload := &eventsPayload{TunnelID: sess.TunnelID}
 	if err != nil {
 		payload.Warnings = append(payload.Warnings, fmt.Sprintf("remote diagnostics unavailable: %v", err))

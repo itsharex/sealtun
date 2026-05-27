@@ -679,6 +679,9 @@ func verifySessionDomain(parent context.Context, tunnelID string) (*domainVerify
 	if err != nil {
 		return nil, err
 	}
+	if !sessionSupportsCustomDomain(*sess) {
+		return nil, fmt.Errorf("custom domains are only supported for https tunnels")
+	}
 	if sess.CustomDomain == "" {
 		return nil, fmt.Errorf("tunnel %s has no custom domain configured", sess.TunnelID)
 	}
@@ -692,6 +695,9 @@ func waitForSessionDomain(parent context.Context, tunnelID string, timeout time.
 	sess, err := findSession(tunnelID)
 	if err != nil {
 		return nil, err
+	}
+	if !sessionSupportsCustomDomain(*sess) {
+		return nil, fmt.Errorf("custom domains are only supported for https tunnels")
 	}
 	if sess.CustomDomain == "" {
 		return nil, fmt.Errorf("tunnel %s has no custom domain configured", sess.TunnelID)
