@@ -92,13 +92,14 @@ Symptoms:
 Actions:
 
 ```bash
+sealtun discover
 sealtun list --check
 sealtun inspect <tunnel-id>
 lsof -i :3000
 curl -v http://127.0.0.1:3000/
 ```
 
-Fix the local service first. Sealtun forwards to `localhost:<localPort>` from the machine running the CLI.
+Use `sealtun discover` when the user is unsure which local port is actually listening; it scans local TCP listening ports only and provides protocol/template hints without creating a tunnel. Fix the local service first. Sealtun forwards to `localhost:<localPort>` from the machine running the CLI.
 
 ## Remote Kubernetes Or Pod Problems
 
@@ -121,6 +122,8 @@ sealtun doctor --json
 
 Remote diagnostics inspect the Sealtun-managed Deployment, Service, Ingress, Pod, Events, and readiness where available. If code changes are needed, inspect `pkg/k8s`, `cmd/inspect.go`, `cmd/doctor.go`, and related tests.
 Prefer `sealtun doctor <tunnel-id>` before asking the user to manually inspect Kubernetes. It summarizes local owner state, local port reachability, remote resource readiness, and next-step suggestions.
+
+In dashboard, use the Resources tab for a read-only resource list and resource occupancy hints. It shows Deployment, Pod, HTTP Service, TCP NodePort Service, Ingress, Certificate, Issuer, and Secret metadata, but it does not estimate cloud billing and never displays Secret data.
 
 ## Custom Domain, DNS, Certificate
 

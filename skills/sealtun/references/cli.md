@@ -184,6 +184,11 @@ The command prints `Public TCP host`, `Public TCP port`, and `Public TCP endpoin
 sealtun status
 sealtun status --json
 
+sealtun discover
+sealtun discover --protocol auto
+sealtun discover --protocol tcp
+sealtun discover --json --limit 20
+
 sealtun list
 sealtun list --check
 sealtun list --json
@@ -215,6 +220,10 @@ sealtun doctor <tunnel-id> --json
 ```
 
 Dashboard is a local workbench by default. It can create HTTPS/SSH/TCP tunnels, run YAML dry-run/diff/apply, stop/start/cleanup tunnels, show logs/metrics/events, and run domain plan/add/verify/clear. It uses only the current active profile/region/namespace and does not switch login scope.
+
+`sealtun discover` and the dashboard `Discover local ports` action scan only local TCP listening ports. They do not probe external networks or create tunnels. Use the returned `protocolHint`, `templateHint`, and `localPort` to prefill an expose command or dashboard form. Standard hints are `22 -> ssh`, `3306 -> mysql/tcp`, `5432 -> postgres/tcp`, `6379 -> redis/tcp`, `1883 -> mqtt/tcp`, and other listening ports default to HTTPS/web.
+
+Dashboard live status uses a token-protected stream and automatically falls back to polling if the stream disconnects. The Resources tab shows Kubernetes resource occupancy for the selected tunnel: Deployment replicas, Pod count, Service type, NodePort, Ingress host count, Certificate presence, Issuer, and Secret metadata. It is not a cloud billing estimate, and Secret data is not displayed.
 
 Every dashboard API request requires the dashboard token. Mutating actions require a confirmation in the page and a backend `confirm` value such as `stop:<tunnel-id>` or `apply:dashboard-yaml`. `--allow-remote` allows a non-loopback dashboard address and should be treated as a security-sensitive choice; remote mode does not embed the token in HTML. For remote dashboards, recommend adding dashboard Basic Auth with `--basic-auth-user` and `--basic-auth-password-env`. `--open` opens the dashboard URL for local workflows.
 

@@ -1769,6 +1769,79 @@ func TestDiagnoseTunnelReportsCustomDomainCertificate(t *testing.T) {
 	}
 }
 
+func TestTunnelResourcesSanitizesSecretsAndReportsCostHints(t *testing.T) {
+	name := "sealtun-abc123"
+	replicas := int32(1)
+	cert := customDomainCertificate(name, "dev.example.com")
+	cert.SetNamespace("default")
+	clientset := fake.NewSimpleClientset(
+		&appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default", Labels: managedLabels(name), CreationTimestamp: metav1.Now()}, Spec: appsv1.DeploymentSpec{Replicas: &replicas}, Status: appsv1.DeploymentStatus{ReadyReplicas: 1}},
+		&corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: name + "-pod", Namespace: "default", Labels: managedLabels(name), CreationTimestamp: metav1.Now()}, Status: corev1.PodStatus{Phase: corev1.PodRunning, Conditions: []corev1.PodCondition{{Type: corev1.PodReady, Status: corev1.ConditionTrue}}}},
+		&corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default", Labels: managedLabels(name), CreationTimestamp: metav1.Now()}, Spec: corev1.ServiceSpec{Type: corev1.ServiceTypeClusterIP, Ports: []corev1.ServicePort{{Name: "http", Port: 80}}}},
+		&corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: name + "-tcp", Namespace: "default", Labels: managedLabels(name), CreationTimestamp: metav1.Now()}, Spec: corev1.ServiceSpec{Type: corev1.ServiceTypeNodePort, Ports: []corev1.ServicePort{{Name: "tcp", Port: 2222, NodePort: 32222}}}},
+		&netv1.Ingress{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default", Labels: managedLabels(name), CreationTimestamp: metav1.Now()}, Spec: netv1.IngressSpec{Rules: []netv1.IngressRule{{Host: "dev.example.com"}}}},
+		&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default", Labels: managedLabels(name), CreationTimestamp: metav1.Now()}, Type: corev1.SecretTypeTLS, Data: map[string][]byte{"tls.key": []byte("secret")}},
+		&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: authSecretName(name), Namespace: "default", Labels: managedLabels(name), CreationTimestamp: metav1.Now()}, Type: corev1.SecretTypeOpaque, Data: map[string][]byte{"token": []byte("secret")}},
+	)
+	issuer := customDomainIssuer(name)
+	issuer.SetNamespace("default")
+	client := &Client{
+		clientset:     clientset,
+		dynamicClient: dynamicfake.NewSimpleDynamicClient(runtime.NewScheme(), issuer, cert),
+		namespace:     "default",
+	}
+
+	payload, err := client.TunnelResources(context.Background(), "abc123")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if payload.Namespace != "default" || payload.TunnelID != "abc123" {
+		t.Fatalf("unexpected payload identity: %#v", payload)
+	}
+	kinds := map[string]TunnelResource{}
+	for _, resource := range payload.Resources {
+		kinds[resource.Kind+"-"+resource.Name] = resource
+		if strings.Contains(fmt.Sprintf("%#v", resource), "tls.key") || strings.Contains(fmt.Sprintf("%#v", resource), "token") {
+			t.Fatalf("secret data leaked through resources payload: %#v", resource)
+		}
+	}
+	if got := kinds["Deployment-"+name]; !strings.Contains(strings.Join(got.CostHints, " "), "desired replicas: 1") {
+		t.Fatalf("expected deployment replica hint, got %#v", got)
+	}
+	if got := kinds["TCP NodePort Service-"+name+"-tcp"]; !strings.Contains(strings.Join(got.CostHints, " "), "32222") {
+		t.Fatalf("expected nodePort hint, got %#v", got)
+	}
+	if _, ok := kinds["Secret-"+name]; !ok {
+		t.Fatalf("expected TLS secret resource in %#v", kinds)
+	}
+	if _, ok := kinds["Secret-"+authSecretName(name)]; !ok {
+		t.Fatalf("expected auth secret resource in %#v", kinds)
+	}
+}
+
+func TestTunnelResourcesReportsMissingResources(t *testing.T) {
+	client := &Client{
+		clientset:     fake.NewSimpleClientset(),
+		dynamicClient: dynamicfake.NewSimpleDynamicClient(runtime.NewScheme()),
+		namespace:     "default",
+	}
+	payload, err := client.TunnelResources(context.Background(), "abc123")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(payload.Resources) == 0 || len(payload.Warnings) == 0 {
+		t.Fatalf("expected missing resources and warnings, got %#v", payload)
+	}
+	if payload.Resources[0].Status != "missing" {
+		t.Fatalf("expected missing status, got %#v", payload.Resources[0])
+	}
+	for _, warning := range payload.Warnings {
+		if strings.Contains(warning, "Certificate") || strings.Contains(warning, "Issuer") || strings.Contains(warning, "Secret") {
+			t.Fatalf("optional certificate/issuer/secret resources should not create warnings: %#v", payload.Warnings)
+		}
+	}
+}
+
 func TestDiagnoseTunnelWarnsWhenCustomDomainIngressHostIsMissing(t *testing.T) {
 	name := "sealtun-abc123"
 	cert := customDomainCertificate(name, "dev.example.com")

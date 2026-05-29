@@ -144,7 +144,7 @@ func runDashboard(ctx context.Context, addr string, port int, allowRemote bool, 
 		Handler:           handler.withPageAuth(mux),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
-		WriteTimeout:      30 * time.Second,
+		WriteTimeout:      0,
 		IdleTimeout:       60 * time.Second,
 	}
 	listener, err := net.Listen("tcp", server.Addr)
@@ -699,12 +699,36 @@ var dashboardHTML = template.Must(template.New("dashboard").Parse(`<!doctype htm
       font-size: 12px;
       line-height: 1.45;
     }
-	.context-badge {
+    .context-badge {
 		color: var(--accent);
 		font-size: 12px;
 		font-weight: 700;
 		white-space: nowrap;
 	}
+    .live-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      min-height: 26px;
+      padding: 0 9px;
+      border: 1px solid #b9ded1;
+      border-radius: 999px;
+      background: #edf7f3;
+      color: var(--accent);
+      font-size: 12px;
+      font-weight: 700;
+    }
+    .live-badge.reconnecting,
+    .live-badge.polling {
+      border-color: #f0d69b;
+      background: #fff7df;
+      color: #8a6100;
+    }
+    .live-badge.disconnected {
+      border-color: #efc2c8;
+      background: var(--bad-soft);
+      color: var(--bad);
+    }
     .toast {
       position: fixed;
       top: 76px;
@@ -1317,6 +1341,34 @@ var dashboardHTML = template.Must(template.New("dashboard").Parse(`<!doctype htm
       max-height: 260px;
       overflow: auto;
     }
+    .discover-list,
+    .resource-list {
+      display: grid;
+      gap: 8px;
+    }
+    .discover-row,
+    .resource-row {
+      display: grid;
+      grid-template-columns: 86px minmax(0, 1fr) auto;
+      gap: 12px;
+      align-items: center;
+      min-height: 48px;
+      padding: 10px 12px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fbfaf7;
+      text-align: left;
+    }
+    .resource-row {
+      grid-template-columns: 140px minmax(0, 1fr) 150px;
+      align-items: start;
+    }
+    .resource-hints {
+      margin-top: 6px;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.45;
+    }
   </style>
 </head>
 <body>
@@ -1344,6 +1396,8 @@ var dashboardHTML = template.Must(template.New("dashboard").Parse(`<!doctype htm
       </div>
       <div class="top-actions">
         <span class="daemon" id="daemon-state"><span class="dot round"></span>Daemon running</span>
+        <span class="top-divider"></span>
+        <span class="live-badge polling" id="live-state"><span class="dot round"></span>Polling</span>
         <span class="top-divider"></span>
         <span>Last updated: <span class="refresh-time" id="updated">--:--:--</span></span>
         <button class="btn" id="refresh-btn" type="button">
@@ -1377,6 +1431,7 @@ var dashboardHTML = template.Must(template.New("dashboard").Parse(`<!doctype htm
           <button class="tab active" data-tab="logs" type="button">Logs</button>
           <button class="tab" data-tab="metrics" type="button">Metrics</button>
           <button class="tab" data-tab="events" type="button">Events</button>
+          <button class="tab" data-tab="resources" type="button">Resources</button>
           <button class="tab" data-tab="domain" type="button">Domain</button>
           <button class="tab" data-tab="config" type="button">Config</button>
         </nav>
@@ -1412,6 +1467,10 @@ var dashboardHTML = template.Must(template.New("dashboard").Parse(`<!doctype htm
     let openMenu = "";
     let refreshInFlight = null;
     let tabDataCache = {};
+    let pollingTimer = null;
+    let watchAbort = null;
+    let watchGeneration = 0;
+    let liveMode = "polling";
 
 	    const esc = (v) => String(v ?? "").replace(/[&<>"']/g, ch => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;" }[ch]));
 	    const dnsHostPattern = /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/i;
@@ -1707,6 +1766,7 @@ var dashboardHTML = template.Must(template.New("dashboard").Parse(`<!doctype htm
       if (activeTab === "logs") target.innerHTML = logsPanel(t);
       if (activeTab === "metrics") target.innerHTML = metricsPanel(t);
       if (activeTab === "events") target.innerHTML = eventsPanel(t);
+      if (activeTab === "resources") target.innerHTML = resourcesPanel(t);
       if (activeTab === "domain") target.innerHTML = domainPanel(t);
       if (activeTab === "config") target.innerHTML = configPanel(t);
       loadActiveTabData(t).catch(err => showToast(err.message || String(err), true));
@@ -1728,6 +1788,7 @@ var dashboardHTML = template.Must(template.New("dashboard").Parse(`<!doctype htm
       if (activeTab === "logs") data = await apiFetch("/api/tunnels/" + id + "/logs?tail=200");
       if (activeTab === "metrics") data = await apiFetch("/api/tunnels/" + id + "/metrics");
       if (activeTab === "events") data = await apiFetch("/api/tunnels/" + id + "/events");
+      if (activeTab === "resources") data = await apiFetch("/api/tunnels/" + id + "/resources");
       setTabCache(t, activeTab, data);
       if (selected()?.tunnelId === t.tunnelId) {
         renderTab();
@@ -1760,6 +1821,21 @@ var dashboardHTML = template.Must(template.New("dashboard").Parse(`<!doctype htm
       const events = data.events || [];
       if (!events.length) return '<div class="empty"><div><strong>No recent events</strong><div>Kubernetes did not report recent tunnel events.</div></div></div>';
       return '<div class="log-box">' + events.map(ev => line((ev.lastTimestamp || ev.firstTimestamp || "").slice(11, 19) || "--:--:--", ev.type || "Event", (ev.reason || "Event") + " " + (ev.object || "-") + ": " + (ev.message || ""))).join("") + '</div>';
+    }
+
+    function resourcesPanel(t) {
+      const data = tabCache(t, "resources");
+      if (!data) return '<div class="empty"><div><strong>Loading resources</strong><div>Fetching Kubernetes resources and resource occupancy hints.</div></div></div>';
+      const resources = data.resources || [];
+      if (!resources.length) return '<div class="empty"><div><strong>No resources</strong><div>No Kubernetes resources were reported for this tunnel.</div></div></div>';
+      return '<div class="resource-list">' + resources.map(item => {
+        const hints = (item.costHints || []).concat(item.warnings || []);
+        return '<div class="resource-row">' +
+          '<div><strong>' + esc(item.kind || "-") + '</strong><div class="muted mono">' + esc(item.namespace || "-") + '</div></div>' +
+          '<div><div class="mono">' + esc(item.name || "-") + '</div><div class="resource-hints">' + esc(hints.join(" · ") || "No resource hints") + '</div></div>' +
+          '<div><span class="tag">' + esc(item.status || "-") + '</span><div class="resource-hints">managed=' + esc(item.managed ? "yes" : "no") + (item.age ? " · age=" + esc(item.age) : "") + '</div></div>' +
+        '</div>';
+      }).join("") + '</div>';
     }
 
 	    function domainPanel(t) {
@@ -1894,6 +1970,79 @@ var dashboardHTML = template.Must(template.New("dashboard").Parse(`<!doctype htm
       return apiFetch(path, { method: "POST", body: JSON.stringify(body || {}) });
     }
 
+    function setLiveState(mode) {
+      liveMode = mode;
+      const el = document.getElementById("live-state");
+      if (!el) return;
+      const label = mode === "live" ? "Live" : mode === "reconnecting" ? "Reconnecting" : mode === "disconnected" ? "Disconnected" : "Polling";
+      el.className = "live-badge " + (mode === "live" ? "" : mode);
+      el.innerHTML = '<span class="dot round"></span>' + label;
+    }
+
+    function startPolling() {
+      if (pollingTimer) return;
+      setLiveState("polling");
+      pollingTimer = setInterval(() => refresh().catch(() => setLiveState("disconnected")), 15000);
+    }
+
+    function stopPolling() {
+      if (!pollingTimer) return;
+      clearInterval(pollingTimer);
+      pollingTimer = null;
+    }
+
+    async function startWatch() {
+      if (!dashboardToken || !window.ReadableStream) {
+        startPolling();
+        return;
+      }
+      const generation = ++watchGeneration;
+      if (watchAbort) watchAbort.abort();
+      watchAbort = new AbortController();
+      setLiveState("reconnecting");
+      try {
+        const res = await fetch("/api/watch", {
+          cache: "no-store",
+          headers: { "X-Sealtun-Dashboard-Token": dashboardToken },
+          signal: watchAbort.signal
+        });
+        if (!res.ok || !res.body) throw new Error("watch returned " + res.status);
+        stopPolling();
+        setLiveState("live");
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+        while (generation === watchGeneration) {
+          const next = await reader.read();
+          if (next.done) break;
+          buffer += decoder.decode(next.value, { stream: true });
+          let idx;
+          while ((idx = buffer.indexOf("\n\n")) >= 0) {
+            const frame = buffer.slice(0, idx);
+            buffer = buffer.slice(idx + 2);
+            handleWatchFrame(frame);
+          }
+        }
+        if (generation === watchGeneration) throw new Error("watch stream ended");
+      } catch (err) {
+        if (watchAbort?.signal.aborted || generation !== watchGeneration) return;
+        setLiveState("reconnecting");
+        startPolling();
+        setTimeout(() => {
+          if (generation === watchGeneration) startWatch();
+        }, 5000);
+      }
+    }
+
+    function handleWatchFrame(frame) {
+      const dataLines = frame.split("\n").filter(line => line.startsWith("data:")).map(line => line.slice(5).trim());
+      if (!dataLines.length) return;
+      try {
+        const event = JSON.parse(dataLines.join("\n"));
+        if (event.type === "summary" && event.data) render(event.data);
+      } catch (_) {}
+    }
+
     function confirmPayload(action, target, label) {
       const confirm = action + ":" + target;
       if (!window.confirm((label || "Run action") + "\n\nConfirm: " + confirm)) return "";
@@ -1937,6 +2086,7 @@ var dashboardHTML = template.Must(template.New("dashboard").Parse(`<!doctype htm
         const data = await postJSON(path, body);
         showToast("Domain " + action + " completed");
         if (data) openResultModal("Domain " + title(action), data);
+        tabDataCache = {};
         await refresh();
       } catch (err) {
         showToast(err.message || String(err), true);
@@ -1975,6 +2125,8 @@ var dashboardHTML = template.Must(template.New("dashboard").Parse(`<!doctype htm
       const defaults = protocolDefaults[template] || protocolDefaults.https;
       const body =
         '<div class="template-pills">' + Object.keys(protocolDefaults).map(key => '<button class="pill" data-template="' + esc(key) + '" type="button">' + esc(key.toUpperCase()) + '</button>').join("") + '</div>' +
+        '<div><button class="btn" id="discover-ports" type="button">Discover local ports</button></div>' +
+        '<div class="discover-list" id="discover-results"></div>' +
         '<div class="form-grid">' +
           '<label class="field">Name<input class="input" id="new-name" value="' + esc(defaults.name) + '"></label>' +
           '<label class="field">Protocol<select class="select" id="new-protocol"><option value="https">https</option><option value="ssh">ssh</option><option value="tcp">tcp</option></select></label>' +
@@ -2005,6 +2157,34 @@ var dashboardHTML = template.Must(template.New("dashboard").Parse(`<!doctype htm
       };
       setTemplate(template);
       backdrop.querySelectorAll("[data-template]").forEach(btn => btn.onclick = () => setTemplate(btn.getAttribute("data-template")));
+      document.getElementById("discover-ports").onclick = async () => {
+        const target = document.getElementById("discover-results");
+        target.innerHTML = '<div class="context-note">Scanning local listening TCP ports...</div>';
+        try {
+          const items = await apiFetch("/api/discover?limit=30");
+          if (!items || !items.length) {
+            target.innerHTML = '<div class="context-note">No local listening TCP ports found.</div>';
+            return;
+          }
+          target.innerHTML = items.map(item =>
+            '<button class="discover-row" data-discover-port="' + esc(item.port) + '" data-discover-protocol="' + esc(item.protocolHint) + '" data-discover-template="' + esc(item.templateHint) + '" type="button">' +
+              '<span class="mono">' + esc(item.port) + '</span>' +
+              '<span><strong>' + esc(item.templateHint || item.protocolHint) + '</strong><div class="context-sub">' + esc((item.processName || "unknown process") + " · " + (item.address || "-")) + '</div></span>' +
+              '<span class="tag">' + esc(item.protocolHint || "-") + '</span>' +
+            '</button>'
+          ).join("");
+          target.querySelectorAll("[data-discover-port]").forEach(btn => {
+            btn.onclick = () => {
+              document.getElementById("new-port").value = btn.getAttribute("data-discover-port") || "";
+              document.getElementById("new-protocol").value = btn.getAttribute("data-discover-protocol") || "https";
+              document.getElementById("new-name").value = btn.getAttribute("data-discover-template") || "web";
+              updateProtocolFields();
+            };
+          });
+        } catch (err) {
+          target.innerHTML = '<div class="context-note">' + esc(err.message || String(err)) + '</div>';
+        }
+      };
       document.getElementById("new-protocol").onchange = updateProtocolFields;
       document.getElementById("create-tunnel").onclick = async () => {
         const name = document.getElementById("new-name").value.trim();
@@ -2101,7 +2281,7 @@ var dashboardHTML = template.Must(template.New("dashboard").Parse(`<!doctype htm
     refresh().catch(err => {
       document.getElementById("tunnel-table").innerHTML = '<div class="empty"><div><strong>Dashboard failed to load</strong><div>' + esc(err.message) + '</div></div></div>';
     });
-    setInterval(() => refresh().catch(() => {}), 15000);
+    startWatch();
   </script>
 </body>
 </html>`))

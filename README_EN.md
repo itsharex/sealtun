@@ -317,6 +317,13 @@ sealtun events <tunnel-id>
 sealtun events <tunnel-id> --json
 ```
 
+Discover local listening ports and get protocol template hints:
+```bash
+sealtun discover
+sealtun discover --protocol tcp
+sealtun discover --json --limit 20
+```
+
 Run local and remote diagnostics:
 ```bash
 # Global health check
@@ -341,6 +348,8 @@ sealtun dashboard --open
 ```
 
 The dashboard listens locally by default and uses only the current active profile/region/namespace. It reads local sessions, login state, remote diagnostics, and custom domain readiness. The page can create HTTPS/SSH/TCP tunnels, run `sealtun.yaml` dry-run/diff/apply, stop/start/cleanup tunnels, view logs/metrics/events, and run domain plan/add/verify/clear.
+
+The dashboard prefers live status updates and shows `Live`, `Reconnecting`, `Polling`, or `Disconnected` in the top bar; if the live stream fails it falls back to 15-second polling. The `Resources` tab shows the tunnel's Deployment, Pods, HTTP Service, TCP NodePort Service, Ingress, Certificate, Issuer, and Secret summaries. Resource visibility is not cloud billing estimation; it only highlights current Sealos/Kubernetes occupancy such as replica count, Pod count, Service type, NodePort, Ingress host count, and certificate presence. Secrets expose only name, type, and metadata, never data. The `New Tunnel` panel can also run `Discover local ports` to scan local TCP listening ports and prefill protocol, name, and localPort.
 
 ```bash
 # Allow remote access to the workbench; use only on trusted networks

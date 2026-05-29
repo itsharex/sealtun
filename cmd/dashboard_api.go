@@ -62,12 +62,23 @@ type dashboardDomainRequest struct {
 	Timeout string `json:"timeout,omitempty"`
 }
 
+type dashboardWatchEvent struct {
+	Type string           `json:"type"`
+	Data dashboardPayload `json:"data"`
+}
+
+var dashboardPortDiscoverer portDiscoverer = systemPortDiscoverer{}
+
 func (s dashboardServer) serveAPI(w http.ResponseWriter, r *http.Request) {
 	if !s.requireToken(w, r) {
 		return
 	}
 	path := strings.TrimPrefix(r.URL.Path, "/api/")
 	switch {
+	case r.Method == http.MethodGet && path == "watch":
+		s.serveWatch(w, r)
+	case r.Method == http.MethodGet && path == "discover":
+		s.serveDiscover(w, r)
 	case r.Method == http.MethodGet && strings.HasPrefix(path, "tunnels/"):
 		s.serveTunnelReadAPI(w, r, strings.TrimPrefix(path, "tunnels/"))
 	case r.Method == http.MethodPost && path == "tunnels":
@@ -111,6 +122,9 @@ func (s dashboardServer) serveTunnelReadAPI(w http.ResponseWriter, r *http.Reque
 		}
 		payload, err := collectEventsPayloadForSession(r.Context(), *sess, 8*time.Second)
 		writeDashboardResult(w, "events loaded", payload, err)
+	case "resources":
+		payload, err := dashboardTunnelResources(r.Context(), tunnelID)
+		writeDashboardResult(w, "resources loaded", payload, err)
 	default:
 		writeDashboardError(w, http.StatusNotFound, "dashboard tunnel API route not found")
 	}
@@ -343,6 +357,55 @@ func writeDashboardJSON(w http.ResponseWriter, status int, payload dashboardAPIR
 	_ = enc.Encode(payload)
 }
 
+func (s dashboardServer) serveWatch(w http.ResponseWriter, r *http.Request) {
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		writeDashboardError(w, http.StatusInternalServerError, "streaming is not supported")
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("X-Accel-Buffering", "no")
+
+	write := func() bool {
+		payload := dashboardWatchEvent{Type: "summary", Data: collectDashboardPayload(r.Context())}
+		data, err := json.Marshal(payload)
+		if err != nil {
+			return false
+		}
+		if _, err := fmt.Fprintf(w, "event: summary\ndata: %s\n\n", data); err != nil {
+			return false
+		}
+		flusher.Flush()
+		return true
+	}
+	if !write() {
+		return
+	}
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-r.Context().Done():
+			return
+		case <-ticker.C:
+			if !write() {
+				return
+			}
+		}
+	}
+}
+
+func (s dashboardServer) serveDiscover(w http.ResponseWriter, r *http.Request) {
+	limit, err := parseDiscoverLimit(r.URL.Query().Get("limit"), 30)
+	if err != nil {
+		writeDashboardError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	items, err := discoverLocalPorts(r.Context(), discoverOptions{Limit: limit, Protocol: "auto"}, dashboardPortDiscoverer)
+	writeDashboardResult(w, "local ports discovered", items, err)
+}
+
 func dashboardTunnelLogs(ctx context.Context, tunnelID string, r *http.Request) (map[string]string, error) {
 	tail, err := parseDashboardTail(r.URL.Query().Get("tail"))
 	if err != nil {
@@ -371,6 +434,20 @@ func dashboardTunnelLogs(ctx context.Context, tunnelID string, r *http.Request) 
 		return nil, fmt.Errorf("stream logs for tunnel %s: %w", sess.TunnelID, err)
 	}
 	return map[string]string{"text": buf.String()}, nil
+}
+
+func dashboardTunnelResources(ctx context.Context, tunnelID string) (*k8s.TunnelResourceList, error) {
+	sess, err := dashboardScopedSession(tunnelID)
+	if err != nil {
+		return nil, err
+	}
+	client, err := k8sClientForSession(*sess)
+	if err != nil {
+		return nil, err
+	}
+	resourceCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	return client.WithNamespace(sess.Namespace).TunnelResources(resourceCtx, sess.TunnelID)
 }
 
 func dashboardScopedSession(tunnelID string) (*session.TunnelSession, error) {

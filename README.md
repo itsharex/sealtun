@@ -317,6 +317,13 @@ sealtun events <tunnel-id>
 sealtun events <tunnel-id> --json
 ```
 
+发现本机监听端口，并用协议模板提示快速创建隧道：
+```bash
+sealtun discover
+sealtun discover --protocol tcp
+sealtun discover --json --limit 20
+```
+
 一键诊断本地与远端状态：
 ```bash
 # 全局健康检查
@@ -341,6 +348,8 @@ sealtun dashboard --open
 ```
 
 Dashboard 默认仅监听本地地址，数据来自当前 active profile/region/namespace 的本地 session、登录状态、远端诊断和自定义域名状态。页面可以创建 HTTPS/SSH/TCP 隧道、执行 `sealtun.yaml` 的 dry-run/diff/apply、stop/start/cleanup 隧道、查看 logs/metrics/events，并执行 domain plan/add/verify/clear。
+
+Dashboard 会优先通过实时连接刷新状态，顶部显示 `Live`、`Reconnecting`、`Polling` 或 `Disconnected`；实时连接失败时自动回退到 15 秒 polling。`Resources` tab 会展示当前隧道的 Deployment、Pod、HTTP Service、TCP NodePort Service、Ingress、Certificate、Issuer 和 Secret 摘要。这里的资源可见性只提示当前 Sealos/Kubernetes 资源占用，例如副本数、Pod 数、Service 类型、NodePort、Ingress host 数和证书是否存在，不做云账单金额估算；Secret 只展示名称、类型和元数据，不展示 data。`New Tunnel` 面板也可以通过 `Discover local ports` 扫描本机 TCP listening 端口并预填协议、名称和 localPort。
 
 ```bash
 # 允许远程访问工作台，仅建议在可信网络临时使用

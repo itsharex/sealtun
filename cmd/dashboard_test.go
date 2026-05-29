@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -91,6 +92,117 @@ func TestDashboardAPIRequiresToken(t *testing.T) {
 	}
 	if payload.OK || payload.Error == "" {
 		t.Fatalf("expected JSON error payload, got %#v", payload)
+	}
+}
+
+func TestDashboardDiscoverRequiresToken(t *testing.T) {
+	t.Parallel()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/discover?limit=1", nil)
+	rec := httptest.NewRecorder()
+	dashboardServer{token: "secret"}.serveAPI(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d", rec.Code)
+	}
+}
+
+func TestDashboardDiscoverLimitValidation(t *testing.T) {
+	t.Parallel()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/discover?limit=201", nil)
+	req.Header.Set("X-Sealtun-Dashboard-Token", "secret")
+	rec := httptest.NewRecorder()
+	dashboardServer{token: "secret"}.serveAPI(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", rec.Code)
+	}
+}
+
+func TestDashboardDiscoverReturnsProviderResults(t *testing.T) {
+	previous := dashboardPortDiscoverer
+	dashboardPortDiscoverer = fakePortDiscoverer{items: []discoverItem{{Port: 6379, Address: "127.0.0.1", PID: 123, ProcessName: "redis-server"}}}
+	t.Cleanup(func() { dashboardPortDiscoverer = previous })
+
+	req := httptest.NewRequest(http.MethodGet, "/api/discover?limit=1", nil)
+	req.Header.Set("X-Sealtun-Dashboard-Token", "secret")
+	rec := httptest.NewRecorder()
+	dashboardServer{token: "secret"}.serveAPI(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	var payload dashboardAPIResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	data, ok := payload.Data.([]interface{})
+	if !ok || len(data) != 1 {
+		t.Fatalf("expected one discovery item, got %#v", payload.Data)
+	}
+	item, ok := data[0].(map[string]interface{})
+	if !ok || item["templateHint"] != "redis" || item["protocolHint"] != "tcp" {
+		t.Fatalf("unexpected discovery payload: %#v", payload.Data)
+	}
+}
+
+func TestDashboardWatchRequiresToken(t *testing.T) {
+	t.Parallel()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/watch", nil)
+	rec := httptest.NewRecorder()
+	dashboardServer{token: "secret"}.serveAPI(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d", rec.Code)
+	}
+}
+
+func TestDashboardWatchStreamsSummaryWithoutTokenLeak(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	server := httptest.NewServer(http.HandlerFunc(dashboardServer{token: "secret"}.serveAPI))
+	defer server.Close()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, server.URL+"/api/watch", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("X-Sealtun-Dashboard-Token", "secret")
+	res, err := server.Client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+
+	if got := res.Header.Get("Content-Type"); got != "text/event-stream" {
+		t.Fatalf("expected SSE content type, got %q", got)
+	}
+	if got := res.Header.Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("expected no-store cache control, got %q", got)
+	}
+	reader := bufio.NewReader(res.Body)
+	var body strings.Builder
+	for i := 0; i < 4; i++ {
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			t.Fatal(err)
+		}
+		body.WriteString(line)
+		if strings.Contains(body.String(), "\n\n") {
+			break
+		}
+	}
+	cancel()
+	text := body.String()
+	if !strings.Contains(text, "event: summary") {
+		t.Fatalf("expected summary event, got %s", text)
+	}
+	if strings.Contains(text, "secret") {
+		t.Fatalf("watch response leaked dashboard token: %s", text)
 	}
 }
 

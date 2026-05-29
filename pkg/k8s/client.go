@@ -154,6 +154,25 @@ type EventDiagnostic struct {
 	LastTimestamp  string `json:"lastTimestamp,omitempty"`
 }
 
+type TunnelResourceList struct {
+	Namespace string           `json:"namespace"`
+	TunnelID  string           `json:"tunnelId"`
+	Resources []TunnelResource `json:"resources,omitempty"`
+	Warnings  []string         `json:"warnings,omitempty"`
+}
+
+type TunnelResource struct {
+	Kind      string            `json:"kind"`
+	Name      string            `json:"name"`
+	Status    string            `json:"status"`
+	Age       string            `json:"age,omitempty"`
+	Namespace string            `json:"namespace"`
+	Managed   bool              `json:"managed"`
+	Labels    map[string]string `json:"labels,omitempty"`
+	Warnings  []string          `json:"warnings,omitempty"`
+	CostHints []string          `json:"costHints,omitempty"`
+}
+
 type TunnelLogOptions struct {
 	TailLines    int64
 	SinceSeconds int64
@@ -1726,6 +1745,230 @@ func (c *Client) CleanupManaged(ctx context.Context, tunnelIDs []string) (*Clean
 
 func (c *Client) DiagnoseTunnel(ctx context.Context, tunnelID string) (*TunnelDiagnostics, error) {
 	return c.DiagnoseTunnelWithOptions(ctx, tunnelID, TunnelOptions{})
+}
+
+func (c *Client) TunnelResources(ctx context.Context, tunnelID string) (*TunnelResourceList, error) {
+	if err := validateTunnelID(tunnelID); err != nil {
+		return nil, err
+	}
+	name := fmt.Sprintf("sealtun-%s", tunnelID)
+	out := &TunnelResourceList{
+		Namespace: c.namespace,
+		TunnelID:  tunnelID,
+	}
+
+	deployment, err := c.clientset.AppsV1().Deployments(c.namespace).Get(ctx, name, metav1.GetOptions{})
+	if apierrors.IsNotFound(err) {
+		out.Resources = append(out.Resources, missingTunnelResource("Deployment", name, c.namespace, "deployment is missing"))
+	} else if err != nil {
+		return nil, fmt.Errorf("get deployment %s: %w", name, err)
+	} else {
+		resource := objectTunnelResource("Deployment", deployment.Name, deployment.Namespace, deployment.Labels, deployment.CreationTimestamp.Time, managedLabelMatches(deployment.Labels, name))
+		desired := int32(1)
+		if deployment.Spec.Replicas != nil {
+			desired = *deployment.Spec.Replicas
+		}
+		resource.Status = fmt.Sprintf("%d/%d ready", deployment.Status.ReadyReplicas, desired)
+		resource.CostHints = append(resource.CostHints, fmt.Sprintf("deployment desired replicas: %d", desired))
+		if deployment.Status.ReadyReplicas == 0 && desired > 0 {
+			resource.Warnings = append(resource.Warnings, "deployment has no ready replicas")
+		}
+		out.Resources = append(out.Resources, resource)
+	}
+
+	pods, err := c.clientset.CoreV1().Pods(c.namespace).List(ctx, metav1.ListOptions{LabelSelector: tunnelPodLabelSelector(name)})
+	if err != nil {
+		return nil, fmt.Errorf("list pods for %s: %w", name, err)
+	}
+	if len(pods.Items) == 0 {
+		out.Resources = append(out.Resources, missingTunnelResource("Pod", name, c.namespace, "no managed pods found"))
+	} else {
+		for i := range pods.Items {
+			pod := &pods.Items[i]
+			resource := objectTunnelResource("Pod", pod.Name, pod.Namespace, pod.Labels, pod.CreationTimestamp.Time, managedLabelMatches(pod.Labels, name))
+			resource.Status = string(pod.Status.Phase)
+			if podReady(pod) {
+				resource.Status += " ready"
+			} else {
+				resource.Warnings = append(resource.Warnings, "pod is not ready")
+			}
+			resource.CostHints = append(resource.CostHints, "pod count: 1")
+			out.Resources = append(out.Resources, resource)
+		}
+	}
+
+	for _, item := range []struct {
+		kind string
+		name string
+	}{
+		{kind: "HTTP Service", name: name},
+		{kind: "TCP NodePort Service", name: tcpServiceName(name)},
+	} {
+		service, err := c.clientset.CoreV1().Services(c.namespace).Get(ctx, item.name, metav1.GetOptions{})
+		if apierrors.IsNotFound(err) {
+			out.Resources = append(out.Resources, optionalMissingTunnelResource(item.kind, item.name, c.namespace, "service not found for this tunnel"))
+			continue
+		}
+		if err != nil {
+			return nil, fmt.Errorf("get service %s: %w", item.name, err)
+		}
+		resource := objectTunnelResource(item.kind, service.Name, service.Namespace, service.Labels, service.CreationTimestamp.Time, managedLabelMatches(service.Labels, name))
+		resource.Status = string(service.Spec.Type)
+		resource.CostHints = append(resource.CostHints, fmt.Sprintf("service type: %s", service.Spec.Type))
+		for _, port := range service.Spec.Ports {
+			if port.NodePort != 0 {
+				resource.CostHints = append(resource.CostHints, fmt.Sprintf("nodePort %s: %d", port.Name, port.NodePort))
+			}
+		}
+		out.Resources = append(out.Resources, resource)
+	}
+
+	ingress, err := c.clientset.NetworkingV1().Ingresses(c.namespace).Get(ctx, name, metav1.GetOptions{})
+	if apierrors.IsNotFound(err) {
+		out.Resources = append(out.Resources, missingTunnelResource("Ingress", name, c.namespace, "ingress is missing"))
+	} else if err != nil {
+		return nil, fmt.Errorf("get ingress %s: %w", name, err)
+	} else {
+		resource := objectTunnelResource("Ingress", ingress.Name, ingress.Namespace, ingress.Labels, ingress.CreationTimestamp.Time, managedLabelMatches(ingress.Labels, name))
+		resource.Status = fmt.Sprintf("%d host(s)", len(ingress.Spec.Rules))
+		resource.CostHints = append(resource.CostHints, fmt.Sprintf("ingress host count: %d", len(ingress.Spec.Rules)))
+		if len(ingress.Spec.Rules) == 0 {
+			resource.Warnings = append(resource.Warnings, "ingress has no hosts")
+		}
+		out.Resources = append(out.Resources, resource)
+	}
+
+	out.Resources = append(out.Resources, c.dynamicTunnelResource(ctx, "Certificate", certificateGVR, name, true)...)
+	out.Resources = append(out.Resources, c.dynamicTunnelResource(ctx, "Issuer", issuerGVR, name, true)...)
+
+	for _, secretName := range []string{name, authSecretName(name)} {
+		secret, err := c.clientset.CoreV1().Secrets(c.namespace).Get(ctx, secretName, metav1.GetOptions{})
+		if apierrors.IsNotFound(err) {
+			out.Resources = append(out.Resources, optionalMissingTunnelResource("Secret", secretName, c.namespace, "secret not found for this tunnel"))
+			continue
+		}
+		if err != nil {
+			return nil, fmt.Errorf("get secret %s: %w", secretName, err)
+		}
+		resource := objectTunnelResource("Secret", secret.Name, secret.Namespace, secret.Labels, secret.CreationTimestamp.Time, managedLabelMatches(secret.Labels, name))
+		resource.Status = string(secret.Type)
+		resource.CostHints = append(resource.CostHints, "secret data hidden")
+		out.Resources = append(out.Resources, resource)
+	}
+
+	for _, resource := range out.Resources {
+		if len(resource.Warnings) > 0 {
+			out.Warnings = append(out.Warnings, fmt.Sprintf("%s %s: %s", resource.Kind, resource.Name, strings.Join(resource.Warnings, "; ")))
+		}
+	}
+	return out, nil
+}
+
+func missingTunnelResource(kind, name, namespace, warning string) TunnelResource {
+	return TunnelResource{
+		Kind:      kind,
+		Name:      name,
+		Status:    "missing",
+		Namespace: namespace,
+		Warnings:  []string{warning},
+	}
+}
+
+func optionalMissingTunnelResource(kind, name, namespace, status string) TunnelResource {
+	return TunnelResource{
+		Kind:      kind,
+		Name:      name,
+		Status:    status,
+		Namespace: namespace,
+	}
+}
+
+func objectTunnelResource(kind, name, namespace string, labels map[string]string, created time.Time, managed bool) TunnelResource {
+	return TunnelResource{
+		Kind:      kind,
+		Name:      name,
+		Status:    "exists",
+		Age:       resourceAge(created),
+		Namespace: namespace,
+		Managed:   managed,
+		Labels:    copyStringMap(labels),
+	}
+}
+
+func (c *Client) dynamicTunnelResource(ctx context.Context, kind string, gvr schema.GroupVersionResource, name string, optional bool) []TunnelResource {
+	resource, err := c.getDynamicResource(ctx, gvr, name)
+	if err != nil {
+		return []TunnelResource{missingTunnelResource(kind, name, c.namespace, fmt.Sprintf("%s diagnostics unavailable: %v", strings.ToLower(kind), err))}
+	}
+	if resource == nil {
+		if optional {
+			return []TunnelResource{optionalMissingTunnelResource(kind, name, c.namespace, strings.ToLower(kind)+" not found for this tunnel")}
+		}
+		return []TunnelResource{missingTunnelResource(kind, name, c.namespace, strings.ToLower(kind)+" is missing")}
+	}
+	item := objectTunnelResource(kind, resource.GetName(), resource.GetNamespace(), resource.GetLabels(), resource.GetCreationTimestamp().Time, managedLabelMatches(resource.GetLabels(), name))
+	switch kind {
+	case "Certificate":
+		item.Status = "exists"
+		if ready, ok := dynamicReadyCondition(resource); ok {
+			if ready {
+				item.Status = "ready"
+			} else {
+				item.Status = "not ready"
+				item.Warnings = append(item.Warnings, "certificate is not ready")
+			}
+		}
+		item.CostHints = append(item.CostHints, "certificate exists: yes")
+	case "Issuer":
+		item.CostHints = append(item.CostHints, "issuer exists: yes")
+	}
+	return []TunnelResource{item}
+}
+
+func dynamicReadyCondition(resource *unstructured.Unstructured) (bool, bool) {
+	conditions, ok, _ := unstructured.NestedSlice(resource.Object, "status", "conditions")
+	if !ok {
+		return false, false
+	}
+	for _, item := range conditions {
+		condition, ok := item.(map[string]interface{})
+		if !ok || stringValue(condition["type"]) != "Ready" {
+			continue
+		}
+		return stringValue(condition["status"]) == "True", true
+	}
+	return false, false
+}
+
+func resourceAge(created time.Time) string {
+	if created.IsZero() {
+		return ""
+	}
+	elapsed := time.Since(created)
+	if elapsed < 0 {
+		elapsed = 0
+	}
+	switch {
+	case elapsed < time.Minute:
+		return fmt.Sprintf("%ds", int(elapsed.Seconds()))
+	case elapsed < time.Hour:
+		return fmt.Sprintf("%dm", int(elapsed.Minutes()))
+	case elapsed < 24*time.Hour:
+		return fmt.Sprintf("%dh", int(elapsed.Hours()))
+	default:
+		return fmt.Sprintf("%dd", int(elapsed.Hours()/24))
+	}
+}
+
+func copyStringMap(in map[string]string) map[string]string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(in))
+	for key, value := range in {
+		out[key] = value
+	}
+	return out
 }
 
 func (c *Client) StreamTunnelLogs(ctx context.Context, tunnelID string, out io.Writer, opts TunnelLogOptions) error {
