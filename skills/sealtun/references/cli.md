@@ -1,6 +1,6 @@
 # Sealtun CLI Reference
 
-Use this for interactive Sealtun operation: install, shell completion, login, expose HTTPS, SSH, or generic TCP, secure public HTTP traffic, observe, bind domains, stop/start, and clean up tunnels.
+Use this for interactive Sealtun operation: install, shell completion, guided init, login, expose HTTPS, SSH, or generic TCP, secure public HTTP traffic, observe, bind domains, stop/start, and clean up tunnels.
 
 ## Quick Recipes
 
@@ -9,6 +9,7 @@ Use these paths before listing every available flag:
 | Request | Commands | Notes |
 | --- | --- | --- |
 | "I want my local app on the internet" / "让本地项目跑在公网" | `sealtun status`; `sealtun discover` if the port is unclear; `sealtun expose <port>` | Defaults to HTTPS and daemon mode. Return the public URL and tunnel ID. |
+| "Help me get started" / "第一次怎么用" | `sealtun status`; `sealtun init`; `sealtun init --apply` only if creation is requested | `init` is read-only by default and prints a recommended command plus YAML. |
 | "Give my local app a public domain" / "给本地服务一个公网域名" | `sealtun expose <port> --domain <domain>` or `sealtun domain plan <id> <domain>` | If the tunnel already exists, plan first, then add/set only when mutation is requested. |
 | "Expose SSH publicly" / "公网 SSH" | `sealtun expose 22 --protocol ssh` | Return `ssh <user>@<public-host> -p <node-port>`. Do not add HTTPS auth/domain features. |
 | "Expose Postgres/MySQL/Redis/MQTT" | `sealtun template postgres`; `sealtun expose 5432 --protocol tcp` | Common protocol templates map to generic TCP. Return `<host>:<node-port>`. |
@@ -70,12 +71,15 @@ First-use behavior:
 ## Expose A Port
 
 ```bash
+sealtun init
+sealtun init --protocol auto --json
+sealtun init --protocol postgres --apply
 sealtun expose 3000
 sealtun expose 3000 --foreground
 sealtun expose 3000 --ready-timeout 2m
 ```
 
-`expose` defaults to `https` and daemon mode. The daemon maintains the local side in the background. Use `--foreground` when the current terminal should own the tunnel lifecycle.
+`init` checks local status, discovers local listening ports, and prints a recommended `expose` command plus `sealtun.yaml`. It does not create resources unless `--apply` is present. `expose` defaults to `https` and daemon mode. The daemon maintains the local side in the background. Use `--foreground` when the current terminal should own the tunnel lifecycle.
 
 Use `https` when the user wants a browser URL, webhook callback URL, OAuth callback, payment callback, public preview link, Basic Auth, Bearer tokens, temporary access links, IP allowlist/denylist, or custom domain.
 
@@ -204,6 +208,13 @@ sealtun discover --protocol auto
 sealtun discover --protocol tcp
 sealtun discover --json --limit 20
 
+sealtun resources <tunnel-id>
+sealtun resources <tunnel-id> --json
+
+sealtun watch
+sealtun watch <tunnel-id>
+sealtun watch <tunnel-id> --json
+
 sealtun list
 sealtun list --check
 sealtun list --json
@@ -232,17 +243,25 @@ sealtun doctor
 sealtun doctor <tunnel-id>
 sealtun doctor --json
 sealtun doctor <tunnel-id> --json
+sealtun doctor --fix --dry-run
+sealtun doctor --fix
 ```
 
-Dashboard is a local workbench by default. It can create HTTPS/SSH/TCP tunnels, run YAML dry-run/diff/apply, stop/start/cleanup tunnels, show logs/metrics/events, and run domain plan/add/verify/clear. It uses only the current active profile/region/namespace and does not switch login scope.
+Dashboard is a local workbench by default. It can create HTTPS/SSH/TCP tunnels, run YAML dry-run/diff/apply, stop/start/cleanup tunnels, show logs/metrics/events/resources, and run domain plan/add/verify/clear. It uses only the current active profile/region/namespace and does not switch login scope.
 
 `sealtun discover` and the dashboard `Discover local ports` action scan only local TCP listening ports. They do not probe external networks or create tunnels. Use the returned `protocolHint`, `templateHint`, and `localPort` to prefill an expose command or dashboard form. Standard hints are `22 -> ssh`, `3306 -> mysql/tcp`, `5432 -> postgres/tcp`, `6379 -> redis/tcp`, `1883 -> mqtt/tcp`, and other listening ports default to HTTPS/web.
 
-Dashboard live status uses a token-protected stream and automatically falls back to polling if the stream disconnects. The Resources tab shows Kubernetes resource occupancy for the selected tunnel: Deployment replicas, Pod count, Service type, NodePort, Ingress host count, Certificate presence, Issuer, and Secret metadata. It is not a cloud billing estimate, and Secret data is not displayed.
+`sealtun resources` uses the current active profile/region/namespace and shows Kubernetes resource occupancy for one tunnel: Deployment replicas, Pod count, Service type, NodePort, Ingress host count, Certificate presence, Issuer, and Secret metadata. It is not a cloud billing estimate, and Secret data is not displayed.
+
+`sealtun watch` refreshes tunnel or global status until interrupted. Use `--json` for newline-delimited events when another tool needs to consume state changes.
+
+`doctor --fix --dry-run` prints conservative automatic fixes without executing them. `doctor --fix` may start stopped tunnels, clean expired/stale sessions, or start the local daemon. It must not run `cleanup --all`, logout, DNS provider changes, or cleanup active tunnels.
+
+Dashboard live status uses a token-protected stream and automatically falls back to polling if the stream disconnects. The Resources tab shows the same Kubernetes resource occupancy hints. Write actions preview the equivalent CLI command before confirmation.
 
 Every dashboard API request requires the dashboard token. Mutating actions require a confirmation in the page and a backend `confirm` value such as `stop:<tunnel-id>` or `apply:dashboard-yaml`. `--allow-remote` allows a non-loopback dashboard address and should be treated as a security-sensitive choice; remote mode does not embed the token in HTML. For remote dashboards, recommend adding dashboard Basic Auth with `--basic-auth-user` and `--basic-auth-password-env`. `--open` opens the dashboard URL for local workflows.
 
-Use `doctor <tunnel-id>` for "why can't I connect" issues. It checks the local session, owner process or daemon, local target port, remote resources where credentials are available, and prints next-step suggestions.
+Use `doctor <tunnel-id>` for "why can't I connect" issues. It checks the local session, owner process or daemon, local target port, remote resources where credentials are available, and prints next-step suggestions. Use `doctor --fix --dry-run` before any automatic fix.
 
 ## Share Links
 
@@ -272,6 +291,7 @@ sealtun stop <tunnel-id>
 sealtun start <tunnel-id>
 sealtun resume <tunnel-id>
 sealtun cleanup
+sealtun cleanup <tunnel-id>
 sealtun cleanup --all
 sealtun logout
 sealtun logout --force
@@ -279,6 +299,6 @@ sealtun logout --force
 
 `stop` scales the remote tunnel Deployment to zero and keeps the domain, Service, Ingress, secrets, NodePort Service for SSH, and local session record. Use `start` or its `resume` alias to scale the same tunnel back up and reconnect it through the local daemon.
 
-`cleanup` deletes stopped, expired, or stale tunnels and removes their local session records. `cleanup --all` force deletes every locally tracked tunnel, including active ones, and should be used only when you intentionally want to remove all tracked remote resources.
+`cleanup` deletes stopped, expired, stale, or error tunnels and removes their local session records. `cleanup <tunnel-id>` targets one eligible tunnel. `cleanup --all` force deletes every locally tracked tunnel, including active ones, and should be used only when you intentionally want to remove all tracked remote resources.
 
 `logout` first tries to clean up locally tracked tunnel resources before deleting credentials. Use `--force` only when cleanup cannot complete and local credentials must be removed anyway.

@@ -70,11 +70,13 @@ sealtun list
 sealtun inspect <tunnel-id>
 sealtun doctor
 sealtun doctor <tunnel-id>
+sealtun doctor --fix --dry-run
 sealtun stop <tunnel-id>
 sealtun cleanup
 ```
 
-`expose` normally starts daemon mode unless `--foreground` is used. `apply` also ensures the local daemon is running after successful cloud changes. `stop` intentionally preserves remote entry resources and scales the pod to zero; `start` or `resume` reopens it. `cleanup` deletes stopped, expired, or stale tunnels; `cleanup --all` force deletes all locally tracked tunnels.
+`expose` normally starts daemon mode unless `--foreground` is used. `apply` also ensures the local daemon is running after successful cloud changes. `stop` intentionally preserves remote entry resources and scales the pod to zero; `start` or `resume` reopens it. `cleanup` deletes stopped, expired, stale, or error tunnels; `cleanup --all` force deletes all locally tracked tunnels.
+Use `doctor --fix --dry-run` before `doctor --fix`. Automatic fixes are conservative: start stopped tunnels, clean expired/stale sessions, or start the local daemon. They must not clean active tunnels, run `cleanup --all`, logout, or modify DNS provider settings.
 
 ## SSH Direct TCP Problems
 
@@ -130,6 +132,7 @@ Actions:
 ```bash
 sealtun doctor <tunnel-id>
 sealtun inspect <tunnel-id> --remote
+sealtun resources <tunnel-id>
 sealtun logs <tunnel-id> --tail 200
 sealtun metrics <tunnel-id> --json
 sealtun events <tunnel-id>
@@ -139,7 +142,7 @@ sealtun doctor --json
 Remote diagnostics inspect the Sealtun-managed Deployment, Service, Ingress, Pod, Events, and readiness where available. If code changes are needed, inspect `pkg/k8s`, `cmd/inspect.go`, `cmd/doctor.go`, and related tests.
 Prefer `sealtun doctor <tunnel-id>` before asking the user to manually inspect Kubernetes. It summarizes local owner state, local port reachability, remote resource readiness, and next-step suggestions.
 
-In dashboard, use the Resources tab for a read-only resource list and resource occupancy hints. It shows Deployment, Pod, HTTP Service, TCP NodePort Service, Ingress, Certificate, Issuer, and Secret metadata, but it does not estimate cloud billing and never displays Secret data.
+Use `sealtun resources <tunnel-id>` or the dashboard Resources tab for a read-only resource list and resource occupancy hints. It shows Deployment, Pod, HTTP Service, TCP NodePort Service, Ingress, Certificate, Issuer, and Secret metadata, but it does not estimate cloud billing and never displays Secret data.
 
 ## Custom Domain, DNS, Certificate
 

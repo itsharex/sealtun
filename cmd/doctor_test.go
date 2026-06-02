@@ -397,6 +397,148 @@ func TestCollectDoctorPayloadCountsDegradedSessionsSeparately(t *testing.T) {
 	}
 }
 
+func TestDoctorFixDryRunDoesNotMutateStoppedSession(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	if err := session.Save(session.TunnelSession{
+		TunnelID:        "stoppedfix",
+		Secret:          "secret",
+		Mode:            "daemon",
+		ConnectionState: session.ConnectionStateStopped,
+		CreatedAt:       time.Now().Format(time.RFC3339),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	previousStart := doctorFixStartTunnel
+	started := 0
+	doctorFixStartTunnel = func(context.Context, *session.TunnelSession) error {
+		started++
+		return nil
+	}
+	t.Cleanup(func() { doctorFixStartTunnel = previousStart })
+
+	payload, err := runDoctorFix(context.Background(), []string{"stoppedfix"}, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !payload.DryRun || len(payload.Actions) != 1 || payload.Actions[0].Action != "start" {
+		t.Fatalf("unexpected dry-run payload: %#v", payload)
+	}
+	if started != 0 {
+		t.Fatalf("dry-run should not execute start, started=%d", started)
+	}
+	got, err := session.Get("stoppedfix")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ConnectionState != session.ConnectionStateStopped {
+		t.Fatalf("dry-run mutated session state: %s", got.ConnectionState)
+	}
+}
+
+func TestDoctorFixRefusesStoppedSessionWithoutSecret(t *testing.T) {
+	action := doctorFixActionsForSession(session.TunnelSession{
+		TunnelID:        "scrubbed",
+		ConnectionState: session.ConnectionStateStopped,
+	})
+	if len(action) != 1 || action[0].Allowed {
+		t.Fatalf("expected scrubbed stopped tunnel start to be blocked, got %#v", action)
+	}
+}
+
+func TestDoctorFixCleanupOnlyRunsForStaleOrExpired(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	if err := session.Save(session.TunnelSession{
+		TunnelID:        "activefix",
+		Secret:          "secret",
+		PID:             currentPIDForTest(),
+		Mode:            "foreground",
+		ConnectionState: session.ConnectionStateConnected,
+		CreatedAt:       time.Now().Format(time.RFC3339),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	err := executeDoctorFixAction(context.Background(), doctorFixAction{Action: "cleanup", TunnelID: "activefix"})
+	if err == nil || !strings.Contains(err.Error(), "refusing to cleanup non-stale active tunnel") {
+		t.Fatalf("expected active cleanup refusal, got %v", err)
+	}
+}
+
+func TestDoctorFixStartsDaemonInsteadOfCleaningDaemonSession(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	if err := session.Save(session.TunnelSession{
+		TunnelID:        "daemonfix",
+		Secret:          "secret",
+		Mode:            "daemon",
+		ConnectionState: session.ConnectionStateConnecting,
+		UpdatedAt:       time.Now().Add(-time.Hour).Format(time.RFC3339),
+		CreatedAt:       time.Now().Add(-time.Hour).Format(time.RFC3339),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	payload, err := runDoctorFix(context.Background(), []string{"daemonfix"}, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(payload.Actions) != 1 || payload.Actions[0].Action != "daemon-start" {
+		t.Fatalf("expected daemon-start only, got %#v", payload.Actions)
+	}
+}
+
+func TestDoctorFixRefusesDaemonCleanupWhenDaemonIsDown(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	previousCleanup := doctorFixCleanupResources
+	cleanupCalled := 0
+	doctorFixCleanupResources = func(context.Context, session.TunnelSession) error {
+		cleanupCalled++
+		return nil
+	}
+	t.Cleanup(func() { doctorFixCleanupResources = previousCleanup })
+
+	if err := session.Save(session.TunnelSession{
+		TunnelID:        "daemonactive",
+		Secret:          "secret",
+		Mode:            "daemon",
+		ConnectionState: session.ConnectionStateConnected,
+		UpdatedAt:       time.Now().Add(-time.Hour).Format(time.RFC3339),
+		CreatedAt:       time.Now().Add(-time.Hour).Format(time.RFC3339),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	err := executeDoctorFixAction(context.Background(), doctorFixAction{Action: "cleanup", TunnelID: "daemonactive"})
+	if err == nil || !strings.Contains(err.Error(), "refusing to cleanup") {
+		t.Fatalf("expected daemon cleanup refusal, got %v", err)
+	}
+	if cleanupCalled != 0 {
+		t.Fatalf("daemon cleanup should not execute remote cleanup, called=%d", cleanupCalled)
+	}
+}
+
+func TestDoctorFixExecutionErrorReportsFailedActions(t *testing.T) {
+	payload := &doctorFixPayload{Actions: []doctorFixAction{{
+		Action:  "start",
+		Allowed: true,
+		Error:   "daemon failed",
+	}}}
+	err := doctorFixExecutionError(payload)
+	if err == nil || !strings.Contains(err.Error(), "failed to execute 1 doctor fix action") {
+		t.Fatalf("expected failed action error, got %v", err)
+	}
+	payload.DryRun = true
+	if err := doctorFixExecutionError(payload); err != nil {
+		t.Fatalf("dry-run should not return execution error, got %v", err)
+	}
+}
+
 func containsWarning(warnings []string, want string) bool {
 	for _, warning := range warnings {
 		if warning == want {

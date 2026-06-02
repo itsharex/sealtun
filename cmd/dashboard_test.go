@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/labring/sealtun/pkg/auth"
 	"github.com/labring/sealtun/pkg/publicauth"
@@ -468,6 +469,27 @@ func TestDashboardHomeDoesNotExposeProfileSwitchEndpoint(t *testing.T) {
 	}
 }
 
+func TestDashboardHomeIncludesCommandPreviewForMutations(t *testing.T) {
+	t.Parallel()
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	rec := httptest.NewRecorder()
+	dashboardServer{token: "secret", embedToken: true}.serveHome(rec, req)
+
+	body := rec.Body.String()
+	for _, want := range []string{
+		"command-preview",
+		"exposeCommandFromForm",
+		"sealtun apply -f sealtun.yaml",
+		"sealtun domain add",
+		"sealtun domain verify",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("dashboard home missing command preview marker %q", want)
+		}
+	}
+}
+
 func TestDashboardScopedSessionsFiltersActiveRegionAndNamespace(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -511,6 +533,32 @@ func TestDashboardScopedSessionRejectsOutsideActiveScope(t *testing.T) {
 
 	if _, err := dashboardScopedSession("otherns"); err == nil || !strings.Contains(err.Error(), "outside the active dashboard scope") {
 		t.Fatalf("expected active scope rejection, got %v", err)
+	}
+}
+
+func TestDashboardCleanupRejectsActiveSessionBeforeRemoteMutation(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	kubeconfig := dashboardTestKubeconfig(t, "ns-a")
+	if err := auth.SaveAuthData(auth.AuthData{Region: "https://gzg.sealos.run"}, kubeconfig); err != nil {
+		t.Fatal(err)
+	}
+	if err := session.Save(session.TunnelSession{
+		TunnelID:        "activeclean",
+		Region:          "https://gzg.sealos.run",
+		Namespace:       "ns-a",
+		PID:             currentPIDForTest(),
+		Mode:            "foreground",
+		ConnectionState: session.ConnectionStateConnected,
+		CreatedAt:       time.Now().Format(time.RFC3339),
+		UpdatedAt:       time.Now().Format(time.RFC3339),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	err := cleanupTunnelByID(context.Background(), "activeclean")
+	if err == nil || !strings.Contains(err.Error(), "refusing cleanup") {
+		t.Fatalf("expected active dashboard cleanup refusal, got %v", err)
 	}
 }
 

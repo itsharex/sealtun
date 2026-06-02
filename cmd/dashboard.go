@@ -1341,6 +1341,17 @@ var dashboardHTML = template.Must(template.New("dashboard").Parse(`<!doctype htm
       max-height: 260px;
       overflow: auto;
     }
+    .command-preview {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #161614;
+      color: #f7f4ec;
+      padding: 12px;
+      font-family: var(--mono);
+      font-size: 12px;
+      line-height: 1.55;
+      overflow-x: auto;
+    }
     .discover-list,
     .resource-list {
       display: grid;
@@ -2043,15 +2054,58 @@ var dashboardHTML = template.Must(template.New("dashboard").Parse(`<!doctype htm
       } catch (_) {}
     }
 
-    function confirmPayload(action, target, label) {
+    function confirmPayload(action, target, label, command) {
       const confirm = action + ":" + target;
-      if (!window.confirm((label || "Run action") + "\n\nConfirm: " + confirm)) return "";
+      const commandLine = command ? "\n\nCLI command:\n" + command : "";
+      if (!window.confirm((label || "Run action") + commandLine + "\n\nConfirm: " + confirm)) return "";
       return confirm;
+    }
+
+    function shellArg(value) {
+      value = String(value ?? "");
+      if (/^[A-Za-z0-9@%_+=:,./-]+$/.test(value) && value !== "") return value;
+      return "'" + value.replace(/'/g, "'\"'\"'") + "'";
+    }
+
+    function exposeCommandFromForm() {
+      const port = Number(document.getElementById("new-port")?.value || 0);
+      const protocol = document.getElementById("new-protocol")?.value || "https";
+      const domain = document.getElementById("new-domain")?.value.trim() || "";
+      const basicAuth = document.getElementById("new-basic-auth")?.value.trim() || "";
+      const bearer = document.getElementById("new-bearer")?.value.trim() || "";
+      const allow = document.getElementById("new-allow")?.value.trim() || "";
+      const deny = document.getElementById("new-deny")?.value.trim() || "";
+      const tempToken = document.getElementById("new-temp-token")?.value.trim() || "";
+      const tempTTL = document.getElementById("new-temp-ttl")?.value.trim() || "";
+      const parts = ["sealtun", "expose", String(port || "<port>")];
+      if (protocol !== "https") parts.push("--protocol", protocol);
+      if (domain) parts.push("--domain", domain, "--wait-domain");
+      if (protocol === "https") {
+        if (basicAuth) parts.push("--basic-auth", basicAuth);
+        if (bearer) parts.push("--bearer-token", bearer);
+        if (allow) parts.push("--ip-allowlist", allow);
+        if (deny) parts.push("--ip-denylist", deny);
+        if (tempToken) parts.push("--temporary-access-token", tempToken);
+        if (tempTTL) parts.push("--temporary-access-ttl", tempTTL);
+      }
+      return parts.map(shellArg).join(" ");
+    }
+
+    function tunnelCommand(action, tunnelID) {
+      return "sealtun " + action + " " + shellArg(tunnelID);
+    }
+
+    function domainCommand(action, tunnelID, domain, wait) {
+      if (action === "plan") return "sealtun domain plan " + shellArg(tunnelID) + " " + shellArg(domain || "<domain>");
+      if (action === "add") return "sealtun domain add " + shellArg(tunnelID) + " " + shellArg(domain || "<domain>") + (wait ? " --wait" : "");
+      if (action === "verify") return "sealtun domain verify " + shellArg(tunnelID) + (wait ? " --wait" : "");
+      if (action === "clear") return "sealtun domain clear " + shellArg(tunnelID);
+      return "";
     }
 
     async function runTunnelAction(action, tunnelID) {
       if (!action || !tunnelID) return;
-      const confirm = confirmPayload(action, tunnelID, title(action) + " tunnel " + tunnelID);
+      const confirm = confirmPayload(action, tunnelID, title(action) + " tunnel " + tunnelID, tunnelCommand(action, tunnelID));
       if (!confirm) return;
       try {
         await postJSON("/api/tunnels/" + encodeURIComponent(tunnelID) + "/" + action, { confirm });
@@ -2071,15 +2125,16 @@ var dashboardHTML = template.Must(template.New("dashboard").Parse(`<!doctype htm
         const domain = window.prompt("Custom domain");
         if (!domain) return;
         body.domain = domain.trim();
+        if (action === "plan") showToast("CLI: " + domainCommand(action, tunnelID, body.domain, false));
       }
       if (action === "add" || action === "clear") {
-        const confirm = confirmPayload("domain-" + action, tunnelID, title(action) + " custom domain");
+        const confirm = confirmPayload("domain-" + action, tunnelID, title(action) + " custom domain", domainCommand(action, tunnelID, body.domain, false));
         if (!confirm) return;
         body.confirm = confirm;
       }
       if (action === "verify" && window.confirm("Wait until the domain is ready?")) {
         body.wait = true;
-        body.confirm = confirmPayload("domain-verify", tunnelID, "Wait for domain verification");
+        body.confirm = confirmPayload("domain-verify", tunnelID, "Wait for domain verification", domainCommand(action, tunnelID, "", true));
         if (!body.confirm) return;
       }
       try {
@@ -2139,6 +2194,7 @@ var dashboardHTML = template.Must(template.New("dashboard").Parse(`<!doctype htm
           '<label class="field" data-http-field>Temporary Token<input class="input" id="new-temp-token" placeholder="optional"></label>' +
           '<label class="field" data-http-field>Temporary TTL<input class="input" id="new-temp-ttl" placeholder="1h"></label>' +
         '</div>' +
+        '<div class="command-preview" id="new-command">sealtun expose 3000</div>' +
         '<pre class="result-box" id="new-result">Ready.</pre>';
       const backdrop = modal("New Tunnel", body, '<button class="btn" data-modal-close type="button">Cancel</button><button class="btn primary" id="create-tunnel" type="button">Create</button>');
       const updateProtocolFields = () => {
@@ -2147,6 +2203,7 @@ var dashboardHTML = template.Must(template.New("dashboard").Parse(`<!doctype htm
           input.disabled = !isHTTPS;
           if (!isHTTPS) input.value = "";
         });
+        document.getElementById("new-command").textContent = exposeCommandFromForm();
       };
       const setTemplate = (key) => {
         const item = protocolDefaults[key] || protocolDefaults.https;
@@ -2185,11 +2242,14 @@ var dashboardHTML = template.Must(template.New("dashboard").Parse(`<!doctype htm
           target.innerHTML = '<div class="context-note">' + esc(err.message || String(err)) + '</div>';
         }
       };
-      document.getElementById("new-protocol").onchange = updateProtocolFields;
+      ["new-name", "new-protocol", "new-port", "new-domain", "new-basic-auth", "new-bearer", "new-allow", "new-deny", "new-temp-token", "new-temp-ttl"].forEach(id => {
+        document.getElementById(id).oninput = updateProtocolFields;
+        document.getElementById(id).onchange = updateProtocolFields;
+      });
       document.getElementById("create-tunnel").onclick = async () => {
         const name = document.getElementById("new-name").value.trim();
         const target = name || "dashboard-tunnel";
-        const confirm = confirmPayload("create", target, "Create tunnel");
+        const confirm = confirmPayload("create", target, "Create tunnel", exposeCommandFromForm());
         if (!confirm) return;
         const splitList = (id) => document.getElementById(id).value.split(",").map(x => x.trim()).filter(Boolean);
         const body = {
@@ -2219,15 +2279,18 @@ var dashboardHTML = template.Must(template.New("dashboard").Parse(`<!doctype htm
     function openApplyModal(initialYAML = "") {
       const body =
         '<label class="field full">sealtun.yaml<textarea class="textarea" id="apply-yaml">' + esc(initialYAML || "version: v1\ntunnels:\n  - name: web\n    localPort: 3000\n    protocol: https\n") + '</textarea></label>' +
+        '<div class="command-preview" id="apply-command">sealtun apply -f sealtun.yaml --dry-run</div>' +
         '<pre class="result-box" id="apply-result">Ready.</pre>';
       modal("Apply YAML", body, '<button class="btn" data-modal-close type="button">Close</button><button class="btn" id="apply-dry-run" type="button">Dry Run</button><button class="btn" id="apply-diff" type="button">Diff</button><button class="btn primary" id="apply-run" type="button">Apply</button>');
       const run = async (kind) => {
         const yaml = document.getElementById("apply-yaml").value;
         const body = { yaml };
         let path = "/api/apply/" + kind;
+        const command = kind === "dry-run" ? "sealtun apply -f sealtun.yaml --dry-run" : (kind === "diff" ? "sealtun diff -f sealtun.yaml" : "sealtun apply -f sealtun.yaml");
+        document.getElementById("apply-command").textContent = command;
         if (kind === "apply") {
           path = "/api/apply";
-          body.confirm = confirmPayload("apply", "dashboard-yaml", "Apply YAML");
+          body.confirm = confirmPayload("apply", "dashboard-yaml", "Apply YAML", command);
           if (!body.confirm) return;
         }
         try {

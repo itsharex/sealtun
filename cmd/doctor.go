@@ -57,6 +57,27 @@ type doctorCheck struct {
 }
 
 var doctorJSON bool
+var doctorFix bool
+var doctorFixDryRun bool
+
+type doctorFixPayload struct {
+	DryRun  bool              `json:"dryRun"`
+	Actions []doctorFixAction `json:"actions"`
+}
+
+type doctorFixAction struct {
+	Action   string `json:"action"`
+	TunnelID string `json:"tunnelId,omitempty"`
+	Command  string `json:"command,omitempty"`
+	Reason   string `json:"reason"`
+	Allowed  bool   `json:"allowed"`
+	Executed bool   `json:"executed,omitempty"`
+	Error    string `json:"error,omitempty"`
+}
+
+var doctorFixStartTunnel = startTunnelSession
+var doctorFixCleanupResources = cleanupSessionResources
+var doctorFixEnsureDaemon = ensureDaemonRunning
 
 var doctorCmd = &cobra.Command{
 	Use:          "doctor [tunnel-id]",
@@ -64,6 +85,25 @@ var doctorCmd = &cobra.Command{
 	Args:         cobra.MaximumNArgs(1),
 	SilenceUsage: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if doctorFixDryRun && !doctorFix {
+			return fmt.Errorf("--dry-run requires --fix")
+		}
+		if doctorFix {
+			payload, err := runDoctorFix(cmd.Context(), args, doctorFixDryRun)
+			if err != nil {
+				return err
+			}
+			if doctorJSON {
+				enc := json.NewEncoder(cmd.OutOrStdout())
+				enc.SetIndent("", "  ")
+				if err := enc.Encode(payload); err != nil {
+					return err
+				}
+				return doctorFixExecutionError(payload)
+			}
+			printDoctorFix(cmd, payload)
+			return doctorFixExecutionError(payload)
+		}
 		if len(args) > 0 {
 			payload, err := collectTunnelDoctorPayload(cmd.Context(), args[0])
 			if err != nil {
@@ -97,6 +137,8 @@ var doctorCmd = &cobra.Command{
 func init() {
 	rootCmd.AddCommand(doctorCmd)
 	doctorCmd.Flags().BoolVar(&doctorJSON, "json", false, "Output diagnostics as JSON")
+	doctorCmd.Flags().BoolVar(&doctorFix, "fix", false, "Execute conservative automatic fixes")
+	doctorCmd.Flags().BoolVar(&doctorFixDryRun, "dry-run", false, "Show conservative automatic fixes without executing them")
 }
 
 func collectDoctorPayload() (*doctorPayload, error) {
@@ -216,6 +258,211 @@ func collectDoctorPayloadFromItems(ctx context.Context, status *statusPayload, i
 	}
 
 	return payload, nil
+}
+
+func runDoctorFix(ctx context.Context, args []string, dryRun bool) (*doctorFixPayload, error) {
+	sessions, err := session.List()
+	if err != nil {
+		return nil, fmt.Errorf("load local session records: %w", err)
+	}
+	if len(args) > 0 {
+		target := args[0]
+		filtered := sessions[:0]
+		for _, sess := range sessions {
+			if sess.TunnelID == target {
+				filtered = append(filtered, sess)
+			}
+		}
+		if len(filtered) == 0 {
+			if _, err := findSession(target); err != nil {
+				return nil, err
+			}
+		}
+		sessions = filtered
+	}
+	status, err := collectStatus()
+	if err != nil {
+		return nil, err
+	}
+	payload := &doctorFixPayload{DryRun: dryRun}
+	if !status.DaemonRunning && hasDaemonSessionNeedingDaemon(sessions) {
+		payload.Actions = append(payload.Actions, doctorFixAction{
+			Action:  "daemon-start",
+			Command: "sealtun daemon",
+			Reason:  "daemon-managed tunnel sessions exist but the local daemon is not running",
+			Allowed: true,
+		})
+	}
+	for _, sess := range sessions {
+		payload.Actions = append(payload.Actions, doctorFixActionsForSession(sess)...)
+	}
+	if dryRun {
+		return payload, nil
+	}
+	for i := range payload.Actions {
+		if !payload.Actions[i].Allowed {
+			continue
+		}
+		err := executeDoctorFixAction(ctx, payload.Actions[i])
+		if err != nil {
+			payload.Actions[i].Error = err.Error()
+			continue
+		}
+		payload.Actions[i].Executed = true
+	}
+	return payload, nil
+}
+
+func hasDaemonSessionNeedingDaemon(sessions []session.TunnelSession) bool {
+	now := time.Now()
+	for _, sess := range sessions {
+		if sess.Mode == "daemon" && sess.ConnectionState != session.ConnectionStateStopped && !sessionExpired(sess, now) {
+			return true
+		}
+	}
+	return false
+}
+
+func doctorFixActionsForSession(sess session.TunnelSession) []doctorFixAction {
+	if sess.ConnectionState == session.ConnectionStateStopped {
+		if sessionExpired(sess, time.Now()) {
+			return []doctorFixAction{{
+				Action:   "cleanup",
+				TunnelID: sess.TunnelID,
+				Command:  commandForTunnelAction("cleanup", sess.TunnelID),
+				Reason:   "stopped tunnel session has expired",
+				Allowed:  true,
+			}}
+		}
+		if strings.TrimSpace(sess.Secret) == "" {
+			return []doctorFixAction{{
+				Action:   "start",
+				TunnelID: sess.TunnelID,
+				Command:  commandForTunnelAction("start", sess.TunnelID),
+				Reason:   "stopped tunnel has no local secret and must be recreated",
+				Allowed:  false,
+			}}
+		}
+		return []doctorFixAction{{
+			Action:   "start",
+			TunnelID: sess.TunnelID,
+			Command:  commandForTunnelAction("start", sess.TunnelID),
+			Reason:   "tunnel is stopped and can be resumed",
+			Allowed:  true,
+		}}
+	}
+	if sessionExpired(sess, time.Now()) {
+		return []doctorFixAction{{
+			Action:   "cleanup",
+			TunnelID: sess.TunnelID,
+			Command:  commandForTunnelAction("cleanup", sess.TunnelID),
+			Reason:   "tunnel session has expired",
+			Allowed:  true,
+		}}
+	}
+	if sess.Mode == "daemon" {
+		return nil
+	}
+	if session.IsStaleWithOwner(sess, time.Minute, sessionOwnerAlive(sess)) {
+		return []doctorFixAction{{
+			Action:   "cleanup",
+			TunnelID: sess.TunnelID,
+			Command:  commandForTunnelAction("cleanup", sess.TunnelID),
+			Reason:   "tunnel session is stale and no active owner is keeping it alive",
+			Allowed:  true,
+		}}
+	}
+	return nil
+}
+
+func executeDoctorFixAction(ctx context.Context, action doctorFixAction) error {
+	switch action.Action {
+	case "daemon-start":
+		return doctorFixEnsureDaemon()
+	case "start":
+		sess, err := findSession(action.TunnelID)
+		if err != nil {
+			return err
+		}
+		if strings.TrimSpace(sess.Secret) == "" {
+			return fmt.Errorf("tunnel %s cannot be started because its local secret is unavailable", sess.TunnelID)
+		}
+		if sessionExpired(*sess, time.Now()) {
+			return fmt.Errorf("tunnel %s has expired", sess.TunnelID)
+		}
+		return doctorFixStartTunnel(ctx, sess)
+	case "cleanup":
+		sess, err := findSession(action.TunnelID)
+		if err != nil {
+			return err
+		}
+		if !sessionExpired(*sess, time.Now()) && !session.IsStaleWithOwner(*sess, time.Minute, sessionOwnerAlive(*sess)) {
+			return fmt.Errorf("refusing to cleanup non-stale active tunnel %s", sess.TunnelID)
+		}
+		if sess.Mode == "daemon" && !sessionExpired(*sess, time.Now()) {
+			return fmt.Errorf("refusing to cleanup daemon-managed active tunnel %s", sess.TunnelID)
+		}
+		cleanupCtx, cancel := context.WithTimeout(ctx, tunnelCleanupTimeout)
+		defer cancel()
+		if err := doctorFixCleanupResources(cleanupCtx, *sess); err != nil {
+			return err
+		}
+		return session.Delete(sess.TunnelID)
+	default:
+		return fmt.Errorf("unknown fix action %q", action.Action)
+	}
+}
+
+func doctorFixExecutionError(payload *doctorFixPayload) error {
+	if payload == nil || payload.DryRun {
+		return nil
+	}
+	failed := 0
+	for _, action := range payload.Actions {
+		if action.Allowed && action.Error != "" {
+			failed++
+		}
+	}
+	if failed > 0 {
+		return fmt.Errorf("failed to execute %d doctor fix action(s)", failed)
+	}
+	return nil
+}
+
+func printDoctorFix(cmd *cobra.Command, payload *doctorFixPayload) {
+	out := cmd.OutOrStdout()
+	if payload.DryRun {
+		fmt.Fprintln(out, "Sealtun Doctor Fix Plan")
+	} else {
+		fmt.Fprintln(out, "Sealtun Doctor Fix Results")
+	}
+	if len(payload.Actions) == 0 {
+		fmt.Fprintln(out, "  No conservative automatic fixes are available.")
+		return
+	}
+	for _, action := range payload.Actions {
+		status := "planned"
+		if !action.Allowed {
+			status = "blocked"
+		} else if action.Executed {
+			status = "executed"
+		}
+		if action.Error != "" {
+			status = "failed"
+		}
+		target := action.TunnelID
+		if target == "" {
+			target = "local"
+		}
+		fmt.Fprintf(out, "  - %s %s: %s\n", action.Action, target, status)
+		fmt.Fprintf(out, "    Reason: %s\n", action.Reason)
+		if action.Command != "" {
+			fmt.Fprintf(out, "    Command: %s\n", action.Command)
+		}
+		if action.Error != "" {
+			fmt.Fprintf(out, "    Error: %s\n", action.Error)
+		}
+	}
 }
 
 func runDoctorRemoteDiagnostics(parent context.Context, payload *doctorPayload, items []listItem, remoteCollector remoteDiagnosticsCollector) {

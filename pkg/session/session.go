@@ -157,7 +157,11 @@ func saveLocked(session TunnelSession) error {
 	if err := os.WriteFile(tmpPath, data, 0o600); err != nil {
 		return err
 	}
-	return os.Rename(tmpPath, path)
+	if err := os.Rename(tmpPath, path); err != nil {
+		_ = os.Remove(tmpPath)
+		return err
+	}
+	return nil
 }
 
 func validateSessionFileForWrite(path, tunnelID string) error {

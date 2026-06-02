@@ -550,6 +550,9 @@ func cleanupTunnelByID(ctx context.Context, tunnelID string) error {
 	if err != nil {
 		return err
 	}
+	if !sessionCleanupEligible(*sess, time.Minute) {
+		return fmt.Errorf("tunnel %s is not stopped, expired, stale, or error; refusing cleanup", sess.TunnelID)
+	}
 	cleanupCtx, cancel := context.WithTimeout(ctx, tunnelCleanupTimeout)
 	defer cancel()
 	if err := cleanupSessionResources(cleanupCtx, *sess); err != nil {

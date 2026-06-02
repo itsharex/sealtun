@@ -15,6 +15,7 @@ It connects your local development machine straight to the internet by dynamical
 - 🌐 **Custom Domain Automation**: Use `domain plan/add/verify/status/doctor` to generate CNAME guidance, wait for DNS, attach domains, and inspect certificate readiness.
 - 🔗 **Temporary Share Links**: Use `share create/list/revoke` to generate expiring links for HTTPS tunnels.
 - 📊 **Status, Diagnostics, and Workbench**: Use `doctor <tunnel-id>`, `inspect --remote`, `logs`, `events`, `metrics`, and `dashboard` to diagnose local ports, daemon state, remote Pods, Services, Ingresses, and certificates, or manage tunnels from the local workbench.
+- 🧭 **Guided UX and Safe Fixes**: Use `init` for first-run command/YAML recommendations, and `resources`, `watch`, or `doctor --fix --dry-run` to understand and conservatively repair tunnel state.
 - 🧩 **Protocol Templates**: Use `template https|ssh|tcp|mysql|postgres|redis|mqtt` to generate commands and `sealtun.yaml` examples.
 - 🧾 **Declarative Config**: Use `apply -f sealtun.yaml` to declare tunnels in YAML and create or update them with stable names; use `export` to turn local sessions back into YAML.
 - 🌐 **Optimized for Sealos**: Native support for Sealos Cloud domains, HTTPS traffic, and WebSocket tunnels.
@@ -159,6 +160,13 @@ Built-in regions:
 ### 2. Expose a local port
 For instance, to make your local Web Server running on Port `3000` accessible to everyone on the Internet:
 ```bash
+# First-time guidance prints a recommended command and sealtun.yaml without creating resources
+sealtun init
+sealtun init --protocol auto --json
+
+# Create the recommended tunnel only when you are ready
+sealtun init --apply
+
 # Default https protocol (compatible with WebSocket)
 sealtun expose 3000
 
@@ -324,6 +332,12 @@ sealtun discover --protocol tcp
 sealtun discover --json --limit 20
 ```
 
+Show Kubernetes resource occupancy hints for one tunnel:
+```bash
+sealtun resources <tunnel-id>
+sealtun resources <tunnel-id> --json
+```
+
 Run local and remote diagnostics:
 ```bash
 # Global health check
@@ -332,7 +346,31 @@ sealtun doctor
 # Single-tunnel diagnosis with local port, daemon, remote resource, and next-step suggestions
 sealtun doctor <tunnel-id>
 sealtun doctor <tunnel-id> --json
+
+# Show conservative automatic fixes without executing them
+sealtun doctor --fix --dry-run
+
+# Execute low-risk fixes: resume stopped tunnels, clean expired/stale tunnels, start the local daemon
+sealtun doctor --fix
 ```
+
+Watch tunnel or global status in real time:
+```bash
+sealtun watch
+sealtun watch <tunnel-id>
+sealtun watch <tunnel-id> --json
+```
+
+Stop, resume, and clean up tunnels:
+```bash
+sealtun stop <tunnel-id>
+sealtun start <tunnel-id>
+sealtun cleanup
+sealtun cleanup <tunnel-id>
+sealtun cleanup --all
+```
+
+`stop` preserves the domain, Service, Ingress, NodePort Service, and local session while scaling the remote Pod replicas to 0; `start` reopens the same tunnel. Default `cleanup` removes stopped, expired, stale, or error tunnels, and `cleanup <tunnel-id>` targets one eligible tunnel. `cleanup --all` force-cleans every remote resource tied to local records and should only be used when you intentionally want to delete all tunnels.
 
 `metrics` combines local session state, remote Deployment/Pod/Ingress readiness, and server-side request counters when the remote pod supports the Bearer-secret-protected `/_sealtun/metrics` endpoint. TCP/SSH tunnels also expose TCP connection, active connection, byte, and error counters.
 
@@ -347,7 +385,7 @@ sealtun dashboard --addr 127.0.0.1 --port 19777
 sealtun dashboard --open
 ```
 
-The dashboard listens locally by default and uses only the current active profile/region/namespace. It reads local sessions, login state, remote diagnostics, and custom domain readiness. The page can create HTTPS/SSH/TCP tunnels, run `sealtun.yaml` dry-run/diff/apply, stop/start/cleanup tunnels, view logs/metrics/events, and run domain plan/add/verify/clear.
+The dashboard listens locally by default and uses only the current active profile/region/namespace. It reads local sessions, login state, remote diagnostics, and custom domain readiness. The page can create HTTPS/SSH/TCP tunnels, run `sealtun.yaml` dry-run/diff/apply, stop/start/cleanup tunnels, view logs/metrics/events/resources, and run domain plan/add/verify/clear. Before write confirmations, it previews the equivalent CLI command so the UI operation is not a black box.
 
 The dashboard prefers live status updates and shows `Live`, `Reconnecting`, `Polling`, or `Disconnected` in the top bar; if the live stream fails it falls back to 15-second polling. The `Resources` tab shows the tunnel's Deployment, Pods, HTTP Service, TCP NodePort Service, Ingress, Certificate, Issuer, and Secret summaries. Resource visibility is not cloud billing estimation; it only highlights current Sealos/Kubernetes occupancy such as replica count, Pod count, Service type, NodePort, Ingress host count, and certificate presence. Secrets expose only name, type, and metadata, never data. The `New Tunnel` panel can also run `Discover local ports` to scan local TCP listening ports and prefill protocol, name, and localPort.
 

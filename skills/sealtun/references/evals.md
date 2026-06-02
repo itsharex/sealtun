@@ -34,6 +34,7 @@ These should trigger the Sealtun skill and choose the expected path. This set sh
 | Prompt | Expected path |
 | --- | --- |
 | "帮我安装并使用 sealtun" | install/login/status path. |
+| "第一次用 sealtun 帮我初始化" | `init` path; no resource creation unless `--apply` is explicitly requested. |
 | "sealtun 怎么把本地 3000 暴露出去" | HTTPS `expose 3000` path. |
 | "sealtun.yaml 先看看会改什么" | `apply --dry-run` and `diff`, not real apply. |
 | "用 Sealtun dashboard 看资源占用和实时状态" | dashboard live/resources path, resource hints not billing. |
@@ -53,6 +54,9 @@ These should trigger the Sealtun skill and choose the expected path. This set sh
 | "用 sealtun 创建临时分享链接" | `share create/list/revoke` path, one-time token warning. |
 | "用 sealtun ssh connect 走 fallback" | SSH WebSocket ProxyCommand fallback path. |
 | "用 sealtun discover 找本地端口" | `discover`, no tunnel creation unless explicitly asked. |
+| "用 sealtun 看资源占用" | `resources <id>` or dashboard Resources path; not billing. |
+| "用 sealtun 实时看隧道状态" | `watch <id>` path. |
+| "用 sealtun doctor 自动修复前先看看计划" | `doctor --fix --dry-run` path before real fix. |
 | "用 sealtun logout" | `logout`, cleanup and `--force` caveat. |
 | "用 sealtun 开启 zsh completion" | shell completion path without editing startup files unless asked. |
 | "用 sealtun 查看 metrics" | `metrics` path, with remote counter caveats. |
@@ -86,12 +90,12 @@ User-facing commands and workflows that must remain represented in the skill:
 
 - Core: `sealtun --version`, shell completion, install through npm/npx or release binaries.
 - Auth and scope: `login`, `logout`, `status`, `region list/current/use`, `profile list/current/save/use/delete`.
-- Tunnel creation: `discover`, `expose`, `template https|ssh|tcp|mysql|postgres|redis|mqtt`.
+- Tunnel creation: `init`, `discover`, `expose`, `template https|ssh|tcp|mysql|postgres|redis|mqtt`.
 - Declarative: `apply -f`, `apply --dry-run`, `diff -f`, `export`.
 - Domain: `domain plan/add/set/verify/status/doctor/clear`.
 - Access and sharing: Basic Auth, Bearer token, IP allowlist/denylist, temporary access token, `share create/list/revoke`.
-- Operations: `list`, `list --check`, `inspect`, `logs`, `events`, `metrics`, `doctor`, `dashboard`.
-- Lifecycle: `stop`, `start`, `resume`, `cleanup`, `cleanup --all`.
+- Operations: `list`, `list --check`, `inspect`, `logs`, `events`, `metrics`, `resources`, `watch`, `doctor`, `doctor --fix --dry-run`, `dashboard`.
+- Lifecycle: `stop`, `start`, `resume`, `cleanup`, `cleanup <tunnel-id>`, `cleanup --all`.
 - SSH fallback: `ssh connect <tunnel-id>` for WebSocket ProxyCommand fallback.
 - Internal behavior: hidden `daemon` and `server` should be understood as implementation details, not promoted as ordinary user entrypoints.
 

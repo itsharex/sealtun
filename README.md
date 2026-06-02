@@ -15,6 +15,7 @@ Sealtun 是一款功能强大、设计优雅的 CLI 工具，旨在为 **Sealos 
 - 🌐 **自定义域名自动化**：可用 `domain plan/add/verify/status/doctor` 生成 CNAME 指引、等待 DNS、绑定域名并检查证书状态。
 - 🔗 **临时分享链接**：可用 `share create/list/revoke` 为 HTTPS 隧道生成 1 小时、2 小时等自动失效的访问链接。
 - 📊 **状态、诊断与工作台**：`doctor <tunnel-id>`、`inspect --remote`、`logs`、`events`、`metrics` 和 `dashboard` 可定位本地端口、daemon、远端 Pod、Service、Ingress 与证书问题，也可在本地工作台中管理隧道。
+- 🧭 **引导与自动修复**：`init` 可根据登录状态和本地监听端口推荐命令/YAML；`resources`、`watch` 与 `doctor --fix --dry-run` 可帮助理解和保守修复隧道状态。
 - 🧩 **协议模板**：`template https|ssh|tcp|mysql|postgres|redis|mqtt` 可生成直接命令和 `sealtun.yaml` 示例。
 - 🧾 **声明式配置**：`apply -f sealtun.yaml` 可用 YAML 声明隧道，并以稳定名称幂等创建或更新；`export` 可把本地 session 导出回 YAML。
 - 🌐 **深度适配 Sealos**：原生使用 Sealos Cloud 的 Kubernetes、Service 与 Ingress 能力，当前稳定支持 HTTPS 入口和 WebSocket 隧道。
@@ -159,6 +160,13 @@ sealtun profile use hzh-dev
 ### 2. 暴露本地端口
 例如，让运行在本地 `3000` 端口的 Web 服务可以被公网访问：
 ```bash
+# 首次使用时可先生成推荐命令和 sealtun.yaml，不会创建资源
+sealtun init
+sealtun init --protocol auto --json
+
+# 确认后再创建推荐隧道
+sealtun init --apply
+
 # 默认使用 https 协议 (兼容普通 HTTP 与 WebSocket 应用流量)
 sealtun expose 3000
 
@@ -324,6 +332,12 @@ sealtun discover --protocol tcp
 sealtun discover --json --limit 20
 ```
 
+查看单条隧道的 Kubernetes 资源占用提示：
+```bash
+sealtun resources <tunnel-id>
+sealtun resources <tunnel-id> --json
+```
+
 一键诊断本地与远端状态：
 ```bash
 # 全局健康检查
@@ -332,7 +346,31 @@ sealtun doctor
 # 单条隧道诊断，会给出本地端口、daemon、远端资源和下一步建议
 sealtun doctor <tunnel-id>
 sealtun doctor <tunnel-id> --json
+
+# 只展示保守自动修复动作，不执行
+sealtun doctor --fix --dry-run
+
+# 执行低风险修复：恢复 stopped 隧道、清理 expired/stale 隧道、启动本地 daemon
+sealtun doctor --fix
 ```
+
+实时观察隧道或全局状态：
+```bash
+sealtun watch
+sealtun watch <tunnel-id>
+sealtun watch <tunnel-id> --json
+```
+
+停止、恢复和清理隧道：
+```bash
+sealtun stop <tunnel-id>
+sealtun start <tunnel-id>
+sealtun cleanup
+sealtun cleanup <tunnel-id>
+sealtun cleanup --all
+```
+
+`stop` 会保留域名、Service、Ingress、NodePort Service 和本地 session，只把远端 Pod 副本缩到 0；`start` 会重新打开同一条隧道。默认 `cleanup` 只清理 stopped、expired、stale 或 error 隧道，`cleanup <tunnel-id>` 只清理指定的合格隧道；`cleanup --all` 会强制清理所有本地记录关联的远端资源，仅在明确想删除所有隧道时使用。
 
 `metrics` 会聚合本地 session 状态、远端 Deployment/Pod/Ingress 状态，并在远端 Pod 支持时读取受 Bearer secret 保护的 `/_sealtun/metrics` 请求计数。TCP/SSH 四层隧道还会暴露 TCP 连接数、活跃连接数、字节数和错误数。
 
@@ -347,7 +385,7 @@ sealtun dashboard --addr 127.0.0.1 --port 19777
 sealtun dashboard --open
 ```
 
-Dashboard 默认仅监听本地地址，数据来自当前 active profile/region/namespace 的本地 session、登录状态、远端诊断和自定义域名状态。页面可以创建 HTTPS/SSH/TCP 隧道、执行 `sealtun.yaml` 的 dry-run/diff/apply、stop/start/cleanup 隧道、查看 logs/metrics/events，并执行 domain plan/add/verify/clear。
+Dashboard 默认仅监听本地地址，数据来自当前 active profile/region/namespace 的本地 session、登录状态、远端诊断和自定义域名状态。页面可以创建 HTTPS/SSH/TCP 隧道、执行 `sealtun.yaml` 的 dry-run/diff/apply、stop/start/cleanup 隧道、查看 logs/metrics/events/resources，并执行 domain plan/add/verify/clear。写操作确认前会展示对应 CLI 命令，方便理解 UI 操作等价于哪条 `sealtun` 命令。
 
 Dashboard 会优先通过实时连接刷新状态，顶部显示 `Live`、`Reconnecting`、`Polling` 或 `Disconnected`；实时连接失败时自动回退到 15 秒 polling。`Resources` tab 会展示当前隧道的 Deployment、Pod、HTTP Service、TCP NodePort Service、Ingress、Certificate、Issuer 和 Secret 摘要。这里的资源可见性只提示当前 Sealos/Kubernetes 资源占用，例如副本数、Pod 数、Service 类型、NodePort、Ingress host 数和证书是否存在，不做云账单金额估算；Secret 只展示名称、类型和元数据，不展示 data。`New Tunnel` 面板也可以通过 `Discover local ports` 扫描本机 TCP listening 端口并预填协议、名称和 localPort。
 

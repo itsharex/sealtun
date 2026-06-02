@@ -92,7 +92,7 @@ func k8sClientForSession(sess session.TunnelSession) (*k8s.Client, error) {
 	return client, nil
 }
 
-func cleanupSessionResources(ctx context.Context, sess session.TunnelSession) error {
+var cleanupSessionResources = func(ctx context.Context, sess session.TunnelSession) error {
 	client, err := k8sClientForSession(sess)
 	if err != nil {
 		return err
@@ -179,6 +179,13 @@ func sessionIsStale(sess session.TunnelSession, gracePeriod time.Duration) bool 
 		return true
 	}
 	return session.IsStaleWithOwner(sess, gracePeriod, sessionOwnerAlive(sess))
+}
+
+func sessionCleanupEligible(sess session.TunnelSession, gracePeriod time.Duration) bool {
+	if sessionIsStale(sess, gracePeriod) {
+		return true
+	}
+	return sess.ConnectionState == session.ConnectionStateError
 }
 
 func sessionNeedsAutomaticRecovery(sess session.TunnelSession, gracePeriod time.Duration) bool {
