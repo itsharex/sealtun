@@ -2120,7 +2120,11 @@ func (c *Client) DiagnoseTunnelWithOptions(ctx context.Context, tunnelID string,
 		}
 	}
 
-	events, err := c.clientset.CoreV1().Events(c.namespace).List(ctx, metav1.ListOptions{})
+	// Bound the event fetch so a busy shared namespace cannot force us to pull
+	// thousands of events (memory pressure, slow diagnostics). We filter
+	// client-side by involved object name afterwards; the cap is generous
+	// enough to still surface the relevant recent events for this tunnel.
+	events, err := c.clientset.CoreV1().Events(c.namespace).List(ctx, metav1.ListOptions{Limit: 500})
 	if err != nil {
 		diag.Warnings = append(diag.Warnings, fmt.Sprintf("remote events unavailable: %v", err))
 		return diag, nil
