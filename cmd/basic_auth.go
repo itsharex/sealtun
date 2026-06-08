@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/labring/sealtun/pkg/k8s"
@@ -53,6 +54,16 @@ func resolveBasicAuthCredentials(input basicAuthInput, lookupEnv func(string) st
 		}
 	}
 	return input.Username, password, true, nil
+}
+
+// warnPlaintextPasswordFlag prints a one-time warning to stderr when a Basic
+// Auth password is provided directly on the command line (via --basic-auth or
+// --basic-auth-password) instead of the safer --basic-auth-password-env form.
+// Command-line values are visible in the process table and shell history.
+func warnPlaintextPasswordFlag(credential, password string) {
+	if credential != "" || password != "" {
+		fmt.Fprintln(os.Stderr, "Warning: a Basic Auth password was passed on the command line; it may be visible in the process list and shell history. Prefer --basic-auth-password-env.")
+	}
 }
 
 func newSessionBasicAuth(username, password string) (*session.BasicAuthConfig, error) {

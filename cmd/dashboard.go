@@ -96,6 +96,7 @@ func dashboardBasicAuthConfig() (*publicauth.BasicAuth, error) {
 	if dashboardBasicAuth == "" && dashboardBasicAuthUser == "" && dashboardBasicAuthPassword == "" && dashboardBasicAuthPasswordEnv == "" {
 		return nil, nil
 	}
+	warnPlaintextPasswordFlag(dashboardBasicAuth, dashboardBasicAuthPassword)
 	basicAuth, err := resolveBasicAuth(basicAuthInput{
 		Credential:  dashboardBasicAuth,
 		Username:    dashboardBasicAuthUser,

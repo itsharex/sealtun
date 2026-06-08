@@ -91,6 +91,7 @@ and establishes a secure connection to forward traffic to your local port.`,
 			return err
 		}
 
+		warnPlaintextPasswordFlag(basicAuthCredential, basicAuthPassword)
 		basicAuthConfig, err := resolveBasicAuth(basicAuthInput{
 			Credential:  basicAuthCredential,
 			Username:    basicAuthUser,

@@ -606,19 +606,6 @@ func (s *Server) handleRawTCPConnection(conn net.Conn) {
 	}
 }
 
-func relayConns(a, b net.Conn) {
-	errc := make(chan error, 2)
-	go func() {
-		_, err := io.Copy(a, b)
-		errc <- err
-	}()
-	go func() {
-		_, err := io.Copy(b, a)
-		errc <- err
-	}()
-	<-errc
-}
-
 func (s *Server) relayRawTCPConns(a, b net.Conn) error {
 	errc := make(chan error, 2)
 	go func() {
