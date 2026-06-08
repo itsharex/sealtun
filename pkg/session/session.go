@@ -45,6 +45,10 @@ type TunnelSession struct {
 	ExpiresAt       string           `json:"expiresAt,omitempty"`
 	Mode            string           `json:"mode,omitempty"`
 	PID             int              `json:"pid"`
+	// PIDStartToken is a best-effort fingerprint of the owning process (e.g. its
+	// start time). It is verified alongside PID so a reused PID belonging to an
+	// unrelated process is not mistaken for a still-alive tunnel owner.
+	PIDStartToken   string           `json:"pidStartToken,omitempty"`
 	ConnectionState string           `json:"connectionState,omitempty"`
 	// CredentialsScrubbed marks a session whose secrets were intentionally
 	// wiped (e.g. by logout). It is the authoritative scrub signal so that a
@@ -151,6 +155,7 @@ func saveLocked(session TunnelSession) error {
 	if err := validateSessionFileForWrite(path, session.TunnelID); err != nil {
 		return err
 	}
+	syncPIDStartToken(&session)
 	preserveScrubbedCredentials(path, &session)
 
 	data, err := json.MarshalIndent(session, "", "  ") // #nosec G117 -- tunnel secrets are intentionally persisted with 0600 permissions for daemon reconnects.
@@ -561,7 +566,43 @@ func IsStaleWithOwner(sess TunnelSession, gracePeriod time.Duration, ownerAlive 
 }
 
 func OwnerAlive(sess TunnelSession) bool {
-	return ProcessAlive(sess.PID)
+	if !ProcessAlive(sess.PID) {
+		return false
+	}
+	// Defend against PID reuse: if we recorded a start token when the PID was
+	// captured, the currently-live PID must still carry the same token. A
+	// mismatch means the original owner died and the PID was recycled by an
+	// unrelated process. When either token is empty (older sessions, or a
+	// platform that cannot resolve it) we fall back to the PID-only check.
+	if sess.PIDStartToken == "" {
+		return true
+	}
+	current := ProcessStartToken(sess.PID)
+	if current == "" {
+		return true
+	}
+	return current == sess.PIDStartToken
+}
+
+// syncPIDStartToken keeps PIDStartToken consistent with PID on every save. When
+// a session records the current process as its owner, capture that process's
+// start token so later liveness checks can detect PID reuse. When PID is cleared
+// (stopped/scrubbed) or refers to another process, drop any stale token rather
+// than persist one that no longer corresponds to PID.
+func syncPIDStartToken(session *TunnelSession) {
+	if session.PID <= 0 {
+		session.PIDStartToken = ""
+		return
+	}
+	if session.PID == os.Getpid() {
+		session.PIDStartToken = ProcessStartToken(session.PID)
+		return
+	}
+	// PID belongs to another process (e.g. the daemon writing on behalf of a
+	// tunnel it owns); only refresh the token if we don't already have one.
+	if session.PIDStartToken == "" {
+		session.PIDStartToken = ProcessStartToken(session.PID)
+	}
 }
 
 func RuntimeStatus(sess TunnelSession) string {
