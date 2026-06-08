@@ -43,6 +43,9 @@ var exportCmd = &cobra.Command{
 			return err
 		}
 		if strings.TrimSpace(exportOutput) != "" {
+			if err := validateExportOutputPath(exportOutput); err != nil {
+				return err
+			}
 			if err := os.WriteFile(exportOutput, data, 0o600); err != nil {
 				return err
 			}
@@ -179,4 +182,24 @@ func envPlaceholder(tunnelID, suffix string) string {
 	name := replacer.Replace(strings.ToUpper(strings.TrimSpace(tunnelID)))
 	suffix = replacer.Replace(strings.ToUpper(strings.TrimSpace(suffix)))
 	return "SEALTUN_" + name + "_" + suffix
+}
+
+// validateExportOutputPath rejects writing the export through a symlink or to a
+// non-regular file. A local attacker could otherwise pre-create the output path
+// as a symlink to a sensitive file and have the export follow it on write.
+func validateExportOutputPath(path string) error {
+	info, err := os.Lstat(path)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("refusing to write export to %q: path is a symlink", path)
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("refusing to write export to %q: not a regular file", path)
+	}
+	return nil
 }

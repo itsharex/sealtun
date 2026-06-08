@@ -158,8 +158,21 @@ func saveLocked(session TunnelSession) error {
 		return err
 	}
 
+	// Create the temp file with O_EXCL so a same-UID attacker cannot pre-create
+	// the (otherwise predictable) temp path as a symlink and redirect this write
+	// to an arbitrary file. os.WriteFile would follow such a symlink.
 	tmpPath := filepath.Join(dir, fmt.Sprintf("%s.%d.%d.tmp", session.TunnelID, os.Getpid(), time.Now().UnixNano()))
-	if err := os.WriteFile(tmpPath, data, 0o600); err != nil {
+	f, err := os.OpenFile(tmpPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600) // #nosec G304 -- tmpPath is under the user-owned session directory; O_EXCL prevents symlink redirection.
+	if err != nil {
+		return err
+	}
+	if _, err := f.Write(data); err != nil {
+		_ = f.Close()
+		_ = os.Remove(tmpPath)
+		return err
+	}
+	if err := f.Close(); err != nil {
+		_ = os.Remove(tmpPath)
 		return err
 	}
 	if err := os.Rename(tmpPath, path); err != nil {
