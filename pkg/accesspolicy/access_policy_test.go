@@ -107,6 +107,57 @@ func TestHashTokenRejectsShortTokens(t *testing.T) {
 	}
 }
 
+func TestParseRateLimit(t *testing.T) {
+	t.Parallel()
+
+	spec, err := ParseRateLimit("60/m")
+	if err != nil {
+		t.Fatalf("ParseRateLimit returned error: %v", err)
+	}
+	if spec.Limit != 60 || spec.Window != time.Minute || spec.Raw != "60/m" {
+		t.Fatalf("unexpected spec: %#v", spec)
+	}
+	for _, value := range []string{"", "0/m", "60/day", "abc/m", "60"} {
+		if _, err := ParseRateLimit(value); err == nil {
+			t.Fatalf("expected %q to be rejected", value)
+		}
+	}
+}
+
+func TestRateLimiterAllowsWithinWindowAndResets(t *testing.T) {
+	t.Parallel()
+
+	limiter := NewRateLimiter(RateLimitSpec{Limit: 2, Window: time.Minute})
+	now := time.Date(2026, 6, 9, 10, 0, 0, 0, time.UTC)
+	if !limiter.Allow("203.0.113.1", now) {
+		t.Fatal("first request should be allowed")
+	}
+	if !limiter.Allow("203.0.113.1", now.Add(10*time.Second)) {
+		t.Fatal("second request should be allowed")
+	}
+	if limiter.Allow("203.0.113.1", now.Add(20*time.Second)) {
+		t.Fatal("third request in same window should be denied")
+	}
+	if !limiter.Allow("203.0.113.1", now.Add(time.Minute)) {
+		t.Fatal("request in next window should be allowed")
+	}
+	if !limiter.Allow("198.51.100.1", now.Add(20*time.Second)) {
+		t.Fatal("separate client key should have its own bucket")
+	}
+}
+
+func TestValidateAcceptsRateLimitAndAuditOnlyPolicy(t *testing.T) {
+	t.Parallel()
+
+	policy := &Policy{RateLimit: "1000/h", Audit: &AuditConfig{Enabled: true}}
+	if err := Validate(policy); err != nil {
+		t.Fatalf("Validate returned error: %v", err)
+	}
+	if Empty(policy) {
+		t.Fatal("rate limit and audit should make policy non-empty")
+	}
+}
+
 func TestStripTemporaryTokenQuery(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "https://example.test/path?_sealtun_token=secret&a=1", nil)
 

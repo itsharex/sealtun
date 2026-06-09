@@ -13,7 +13,8 @@ Sealtun 是一款功能强大、设计优雅的 CLI 工具，旨在为 **Sealos 
 - 👤 **Profile 多账号管理**：可把不同 Sealos 账号、region、workspace 和 kubeconfig 保存为命名 profile，按需切换。
 - 🚀 **一键暴露服务**：执行 `sealtun expose 8080`，即可获得一个受信任的 HTTPS URL，将流量安全地路由到本地。
 - 🌐 **自定义域名自动化**：可用 `domain plan/add/verify/status/doctor` 生成 CNAME 指引、等待 DNS、绑定域名并检查证书状态。
-- 🔗 **临时分享链接**：可用 `share create/list/revoke` 为 HTTPS 隧道生成 1 小时、2 小时等自动失效的访问链接。
+- 🔗 **临时分享链接与轮换**：可用 `share create/list/revoke/rotate` 为 HTTPS 隧道生成、废弃或轮换自动失效的访问链接。
+- 🛡️ **安全运营**：HTTPS 隧道支持 Basic Auth、Bearer Token、临时链接、IP 规则、rate limit、访问审计和 server secret 轮换。
 - 📊 **状态、诊断与工作台**：`doctor <tunnel-id>`、`inspect --remote`、`logs`、`events`、`metrics` 和 `dashboard` 可定位本地端口、daemon、远端 Pod、Service、Ingress 与证书问题，也可在本地工作台中管理隧道。
 - 🧭 **引导与自动修复**：`init` 可根据登录状态和本地监听端口推荐命令/YAML；`resources`、`watch` 与 `doctor --fix --dry-run` 可帮助理解和保守修复隧道状态。
 - 🧩 **协议模板**：`template https|ssh|tcp|mysql|postgres|redis|mqtt` 可生成直接命令和 `sealtun.yaml` 示例。
@@ -207,9 +208,12 @@ sealtun expose 3000 --ip-allowlist 203.0.113.10,198.51.100.0/24 --ip-denylist 19
 # 临时访问链接，默认 1 小时后失效
 export SEALTUN_TEMP_TOKEN='review-link-secret'
 sealtun expose 3000 --temporary-access-token-env SEALTUN_TEMP_TOKEN --temporary-access-ttl 1h
+
+# 限流和访问审计
+sealtun expose 3000 --rate-limit 60/m --audit
 ```
 
-Bearer Token 和临时链接 token 至少需要 8 个字符，只保存 SHA-256 hash，不会写入 Deployment 参数；临时链接使用 `?_sealtun_token=...` 访问，Sealtun 会在转发到本地服务前移除该查询参数。IP 规则优先使用 Ingress/代理传入的 `X-Real-IP`，再回退到 `X-Forwarded-For` 中最后一个有效的代理确认客户端 IP。Basic Auth 与 Bearer/临时链接同时配置时，任一认证方式通过即可访问。
+Bearer Token 和临时链接 token 至少需要 8 个字符，只保存 SHA-256 hash，不会写入 Deployment 参数；临时链接使用 `?_sealtun_token=...` 访问，Sealtun 会在转发到本地服务前移除该查询参数。IP 规则优先使用 Ingress/代理传入的 `X-Real-IP`，再回退到 `X-Forwarded-For` 中最后一个有效的代理确认客户端 IP。Basic Auth 与 Bearer/临时链接同时配置时，任一认证方式通过即可访问。`--rate-limit` 使用固定窗口格式，例如 `60/m`、`1000/h`；访问审计只记录 allow/deny 原因、状态码、路径和客户端 IP，不记录 token 明文、Authorization header 或 Basic Auth 密码。
 
 为已有 HTTPS 隧道创建、查看和撤销临时分享链接：
 ```bash
@@ -219,11 +223,33 @@ sealtun share create <tunnel-id> --name review --ttl 1h
 # 查看链接元数据，不会泄漏 token 明文
 sealtun share list <tunnel-id>
 
+# 轮换指定链接，旧 token 立即失效，新 URL 只显示一次
+sealtun share rotate <tunnel-id> review --ttl 1h
+
 # 撤销指定名称的分享链接
 sealtun share revoke <tunnel-id> review
 ```
 
 `share` 只适用于 HTTPS 隧道。SSH/TCP 四层入口没有 HTTP query token 认证层，因此不支持临时分享链接。
+
+查看和更新 HTTPS 访问策略：
+```bash
+sealtun policy show <tunnel-id>
+sealtun policy set <tunnel-id> --rate-limit 60/m --audit
+sealtun policy set <tunnel-id> --clear-rate-limit
+sealtun policy set <tunnel-id> --no-audit
+
+# 查看最近 10 分钟访问审计
+sealtun policy audit <tunnel-id> --since 10m
+sealtun policy audit <tunnel-id> --since 10m --json
+```
+
+轮换隧道 server secret：
+```bash
+sealtun rotate <tunnel-id> --server-secret
+```
+
+新的 server secret 只在本次命令输出中显示一次，并会写回本地 session；远端 Deployment 会滚动到新 secret。`policy`、`share`、`rotate` 都只对当前本地 session 记录对应的隧道生效，HTTPS 访问策略不会应用到 SSH/TCP NodePort 流量。
 
 Sealtun 会自动执行以下操作：
 1. 在你的 Sealos Namespace 中启动一个隧道代理 Pod。
@@ -396,7 +422,7 @@ sealtun dashboard --addr 127.0.0.1 --port 19777
 sealtun dashboard --open
 ```
 
-Dashboard 默认仅监听本地地址，数据来自当前 active profile/region/namespace 的本地 session、登录状态、远端诊断和自定义域名状态。页面可以创建 HTTPS/SSH/TCP 隧道、执行 `sealtun.yaml` 的 dry-run/diff/apply、stop/start/cleanup 隧道、查看 logs/metrics/events/resources，并执行 domain plan/add/verify/clear。写操作确认前会展示对应 CLI 命令，方便理解 UI 操作等价于哪条 `sealtun` 命令。
+Dashboard 默认仅监听本地地址，数据来自当前 active profile/region/namespace 的本地 session、登录状态、远端诊断和自定义域名状态。页面可以创建 HTTPS/SSH/TCP 隧道、执行 `sealtun.yaml` 的 dry-run/diff/apply、stop/start/cleanup 隧道、查看 logs/metrics/events/resources/audit，并执行 domain plan/add/verify/clear、policy set、share rotate 和 server secret rotate。写操作确认前会展示对应 CLI 命令，方便理解 UI 操作等价于哪条 `sealtun` 命令。
 
 Dashboard 会优先通过实时连接刷新状态，顶部显示 `Live`、`Reconnecting`、`Polling` 或 `Disconnected`；实时连接失败时自动回退到 15 秒 polling。`Resources` tab 会展示当前隧道的 Deployment、Pod、HTTP Service、TCP NodePort Service、Ingress、Certificate、Issuer 和 Secret 摘要。这里的资源可见性只提示当前 Sealos/Kubernetes 资源占用，例如副本数、Pod 数、Service 类型、NodePort、Ingress host 数和证书是否存在，不做云账单金额估算；Secret 只展示名称、类型和元数据，不展示 data。`New Tunnel` 面板也可以通过 `Discover local ports` 扫描本机 TCP listening 端口并预填协议、名称和 localPort。
 
@@ -437,6 +463,9 @@ tunnels:
       credential: admin:change-me
     accessPolicy:
       bearerTokenEnv: SEALTUN_BEARER_TOKEN
+      rateLimit: 60/m
+      audit:
+        enabled: true
       ipAllowlist:
         - 203.0.113.10
         - 198.51.100.0/24

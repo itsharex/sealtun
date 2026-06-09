@@ -13,7 +13,8 @@ It connects your local development machine straight to the internet by dynamical
 - 👤 **Named Profiles**: Save different Sealos accounts, regions, workspaces, and kubeconfigs as named profiles and switch between them.
 - 🚀 **One-Command Expose**: Execute `sealtun expose 8080`, and get a fully trusted HTTPS URL for your localhost securely routed.
 - 🌐 **Custom Domain Automation**: Use `domain plan/add/verify/status/doctor` to generate CNAME guidance, wait for DNS, attach domains, and inspect certificate readiness.
-- 🔗 **Temporary Share Links**: Use `share create/list/revoke` to generate expiring links for HTTPS tunnels.
+- 🔗 **Temporary Share Links and Rotation**: Use `share create/list/revoke/rotate` to generate, revoke, or rotate expiring links for HTTPS tunnels.
+- 🛡️ **Security Operations**: HTTPS tunnels support Basic Auth, Bearer tokens, temporary links, IP rules, rate limits, access audit, and server secret rotation.
 - 📊 **Status, Diagnostics, and Workbench**: Use `doctor <tunnel-id>`, `inspect --remote`, `logs`, `events`, `metrics`, and `dashboard` to diagnose local ports, daemon state, remote Pods, Services, Ingresses, and certificates, or manage tunnels from the local workbench.
 - 🧭 **Guided UX and Safe Fixes**: Use `init` for first-run command/YAML recommendations, and `resources`, `watch`, or `doctor --fix --dry-run` to understand and conservatively repair tunnel state.
 - 🧩 **Protocol Templates**: Use `template https|ssh|tcp|mysql|postgres|redis|mqtt` to generate commands and `sealtun.yaml` examples.
@@ -207,9 +208,12 @@ sealtun expose 3000 --ip-allowlist 203.0.113.10,198.51.100.0/24 --ip-denylist 19
 # Temporary access link, expiring after 1 hour by default
 export SEALTUN_TEMP_TOKEN='review-link-secret'
 sealtun expose 3000 --temporary-access-token-env SEALTUN_TEMP_TOKEN --temporary-access-ttl 1h
+
+# Rate limit and access audit
+sealtun expose 3000 --rate-limit 60/m --audit
 ```
 
-Bearer and temporary-link tokens must be at least 8 characters. They are stored only as SHA-256 hashes and are not written into Deployment args. Temporary links use `?_sealtun_token=...`; Sealtun strips that query parameter before forwarding the request to your local service. IP rules prefer the `X-Real-IP` value set by the Ingress/proxy and fall back to the last valid proxy-confirmed client IP in `X-Forwarded-For`. When Basic Auth and Bearer/temporary tokens are both configured, either authentication method can grant access.
+Bearer and temporary-link tokens must be at least 8 characters. They are stored only as SHA-256 hashes and are not written into Deployment args. Temporary links use `?_sealtun_token=...`; Sealtun strips that query parameter before forwarding the request to your local service. IP rules prefer the `X-Real-IP` value set by the Ingress/proxy and fall back to the last valid proxy-confirmed client IP in `X-Forwarded-For`. When Basic Auth and Bearer/temporary tokens are both configured, either authentication method can grant access. `--rate-limit` uses fixed-window specs such as `60/m` or `1000/h`; access audit records only allow/deny reason, status, path, and client IP, never plaintext tokens, Authorization headers, or Basic Auth passwords.
 
 Create, list, and revoke temporary share links for an existing HTTPS tunnel:
 ```bash
@@ -219,11 +223,33 @@ sealtun share create <tunnel-id> --name review --ttl 1h
 # List metadata without revealing tokens
 sealtun share list <tunnel-id>
 
+# Rotate a named link. The old token is invalidated and the new URL is shown once.
+sealtun share rotate <tunnel-id> review --ttl 1h
+
 # Revoke a named share link
 sealtun share revoke <tunnel-id> review
 ```
 
 `share` only applies to HTTPS tunnels. SSH/TCP L4 entries do not have an HTTP query-token layer and therefore do not support temporary share links.
+
+Show and update HTTPS access policy:
+```bash
+sealtun policy show <tunnel-id>
+sealtun policy set <tunnel-id> --rate-limit 60/m --audit
+sealtun policy set <tunnel-id> --clear-rate-limit
+sealtun policy set <tunnel-id> --no-audit
+
+# Show the last 10 minutes of access audit events
+sealtun policy audit <tunnel-id> --since 10m
+sealtun policy audit <tunnel-id> --since 10m --json
+```
+
+Rotate the tunnel server secret:
+```bash
+sealtun rotate <tunnel-id> --server-secret
+```
+
+The new server secret is printed only once and saved back to the local session; the remote Deployment rolls to the new secret. `policy`, `share`, and `rotate` operate on the tunnel represented by the local session. HTTPS access policies do not apply to SSH/TCP NodePort traffic.
 
 Sealtun will:
 1. Spin up a tunnel proxy Pod in your Sealos namespace.
@@ -396,7 +422,7 @@ sealtun dashboard --addr 127.0.0.1 --port 19777
 sealtun dashboard --open
 ```
 
-The dashboard listens locally by default and uses only the current active profile/region/namespace. It reads local sessions, login state, remote diagnostics, and custom domain readiness. The page can create HTTPS/SSH/TCP tunnels, run `sealtun.yaml` dry-run/diff/apply, stop/start/cleanup tunnels, view logs/metrics/events/resources, and run domain plan/add/verify/clear. Before write confirmations, it previews the equivalent CLI command so the UI operation is not a black box.
+The dashboard listens locally by default and uses only the current active profile/region/namespace. It reads local sessions, login state, remote diagnostics, and custom domain readiness. The page can create HTTPS/SSH/TCP tunnels, run `sealtun.yaml` dry-run/diff/apply, stop/start/cleanup tunnels, view logs/metrics/events/resources/audit, and run domain plan/add/verify/clear, policy set, share rotate, and server secret rotate. Before write confirmations, it previews the equivalent CLI command so the UI operation is not a black box.
 
 The dashboard prefers live status updates and shows `Live`, `Reconnecting`, `Polling`, or `Disconnected` in the top bar; if the live stream fails it falls back to 15-second polling. The `Resources` tab shows the tunnel's Deployment, Pods, HTTP Service, TCP NodePort Service, Ingress, Certificate, Issuer, and Secret summaries. Resource visibility is not cloud billing estimation; it only highlights current Sealos/Kubernetes occupancy such as replica count, Pod count, Service type, NodePort, Ingress host count, and certificate presence. Secrets expose only name, type, and metadata, never data. The `New Tunnel` panel can also run `Discover local ports` to scan local TCP listening ports and prefill protocol, name, and localPort.
 
@@ -437,6 +463,9 @@ tunnels:
       credential: admin:change-me
     accessPolicy:
       bearerTokenEnv: SEALTUN_BEARER_TOKEN
+      rateLimit: 60/m
+      audit:
+        enabled: true
       ipAllowlist:
         - 203.0.113.10
         - 198.51.100.0/24

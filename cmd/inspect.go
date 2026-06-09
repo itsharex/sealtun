@@ -48,6 +48,8 @@ type inspectAccessPolicy struct {
 	IPAllowlist    []string `json:"ipAllowlist,omitempty"`
 	IPDenylist     []string `json:"ipDenylist,omitempty"`
 	TemporaryLinks int      `json:"temporaryLinks,omitempty"`
+	RateLimit      string   `json:"rateLimit,omitempty"`
+	AuditEnabled   bool     `json:"auditEnabled,omitempty"`
 }
 
 type remoteDiagnosticsCollector func(context.Context, session.TunnelSession) (*k8s.TunnelDiagnostics, error)
@@ -227,6 +229,12 @@ func printInspect(cmd *cobra.Command, payload *inspectPayload) {
 		if payload.AccessPolicy.TemporaryLinks > 0 {
 			fmt.Fprintf(out, "  Temporary links: %d configured\n", payload.AccessPolicy.TemporaryLinks)
 		}
+		if payload.AccessPolicy.RateLimit != "" {
+			fmt.Fprintf(out, "  Rate limit: %s\n", payload.AccessPolicy.RateLimit)
+		}
+		if payload.AccessPolicy.AuditEnabled {
+			fmt.Fprintln(out, "  Access audit: enabled")
+		}
 	}
 	if payload.ExpiresAt != "" {
 		if payload.TTL != "" {
@@ -320,8 +328,10 @@ func inspectAccessPolicyFromSession(config *session.AccessPolicy) *inspectAccess
 		IPAllowlist:    append([]string(nil), config.IPAllowlist...),
 		IPDenylist:     append([]string(nil), config.IPDenylist...),
 		TemporaryLinks: len(config.TemporaryTokens),
+		RateLimit:      config.RateLimit,
+		AuditEnabled:   config.Audit != nil && config.Audit.Enabled,
 	}
-	if payload.BearerTokens == 0 && payload.TemporaryLinks == 0 && len(payload.IPAllowlist) == 0 && len(payload.IPDenylist) == 0 {
+	if payload.BearerTokens == 0 && payload.TemporaryLinks == 0 && len(payload.IPAllowlist) == 0 && len(payload.IPDenylist) == 0 && payload.RateLimit == "" && !payload.AuditEnabled {
 		return nil
 	}
 	return payload

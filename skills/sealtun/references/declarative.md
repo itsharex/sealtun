@@ -34,7 +34,7 @@ Use declarative config when the user wants repeatability, multiple tunnels, stab
 | Public SSH | `protocol: ssh`, `localPort: 22` | output must show SSH host and port |
 | Generic TCP/database | `protocol: tcp`, protocol-specific port | output must show `<host>:<port>` |
 | Auto-expire | `ttl: 2h` or similar Go duration | verify `expiresAt` behavior in output/session |
-| Secure HTTPS | `basicAuth` and/or `accessPolicy` | prefer env-backed secrets unless local-only inline config is intentional |
+| Secure HTTPS | `basicAuth` and/or `accessPolicy` with tokens, IP rules, rate limit, audit, or temporary links | prefer env-backed secrets unless local-only inline config is intentional |
 
 Never add `domain`, `basicAuth`, or `accessPolicy` to `ssh` or `tcp` tunnels; those are HTTPS-layer features.
 
@@ -52,6 +52,9 @@ tunnels:
       credential: admin:change-me
     accessPolicy:
       bearerTokenEnv: SEALTUN_BEARER_TOKEN
+      rateLimit: 60/m
+      audit:
+        enabled: true
       ipAllowlist:
         - 203.0.113.10
         - 198.51.100.0/24
@@ -109,6 +112,9 @@ Prefer `passwordEnv` for shared files. Use inline forms only when the user inten
 ```yaml
 accessPolicy:
   bearerTokenEnv: SEALTUN_BEARER_TOKEN
+  rateLimit: 60/m
+  audit:
+    enabled: true
   ipAllowlist:
     - 203.0.113.10
     - 198.51.100.0/24
@@ -130,6 +136,8 @@ Rules:
 - `expiresAt` must be RFC3339 and in the future.
 - Token values must be at least 8 characters.
 - `sealtun apply` prints temporary URLs only when an inline `token` is present; `tokenEnv` avoids echoing the token.
+- `rateLimit` uses fixed-window specs such as `60/m` or `1000/h`.
+- `audit.enabled: true` enables HTTPS access audit. Audit records allow/deny reason and metadata, not plaintext secrets.
 
 ## SSH YAML
 

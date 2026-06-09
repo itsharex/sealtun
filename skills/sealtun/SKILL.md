@@ -1,6 +1,6 @@
 ---
 name: sealtun
-description: "Use for Sealtun CLI help and Sealos local-to-public tunnels: init, login, expose HTTPS/SSH/TCP, sealtun.yaml, dashboard, domains, access, discover, resources, watch, doctor, stop/start/cleanup. Avoid generic Kubernetes, DNS-only, domain buying, prod deploy, ordinary SSH."
+description: "Use for Sealtun CLI help and Sealos local-to-public tunnels: init, login, expose HTTPS/SSH/TCP, sealtun.yaml, dashboard, domains, policy/audit/rotate, discover, resources, watch, doctor, stop/start/cleanup. Avoid generic Kubernetes, DNS-only, domain buying, prod deploy, ordinary SSH."
 ---
 
 # Sealtun
@@ -9,7 +9,7 @@ description: "Use for Sealtun CLI help and Sealos local-to-public tunnels: init,
 
 Classify the request before answering or editing:
 
-- User operation: install, shell completion, guided init, login, discover local ports, expose HTTPS, SSH, or generic TCP, generate protocol templates, secure public HTTP traffic, create/list/revoke temporary share links, plan/add/verify a custom domain, inspect state, watch status, view resources, stop/start/resume, clean up, export YAML, or use the dashboard. Read `references/cli.md`.
+- User operation: install, shell completion, guided init, login, discover local ports, expose HTTPS, SSH, or generic TCP, generate protocol templates, secure public HTTP traffic, show/set policy, audit access, create/list/revoke/rotate temporary share links, rotate server secret, plan/add/verify a custom domain, inspect state, watch status, view resources, stop/start/resume, clean up, export YAML, or use the dashboard. Read `references/cli.md`.
 - Declarative configuration: `sealtun.yaml`, `apply -f`, `diff -f`, `export`, multi-tunnel management, stable names, `ttl`, HTTPS access policies, SSH tunnel declarations, or generic TCP tunnel declarations. Read `references/declarative.md`.
 - Troubleshooting: login/profile mismatch, daemon/session issues, local port discovery/failures, SSH/TCP direct NodePort problems, remote Kubernetes problems, resource lists/resource occupancy, DNS, Ingress, certificate, logs, metrics, events, dashboard live updates, or dashboard behavior. Read `references/troubleshooting.md`.
 - Skill maintenance or quality review: trigger precision, workflow scoring, or regression prompts for this skill. Read `references/evals.md`.
@@ -23,7 +23,7 @@ Use the user's intent to choose the shortest safe path:
 | User intent | Primary path | Verify with |
 | --- | --- | --- |
 | Make a local web app, dev server, callback, preview, or webhook public | `status` -> `discover` when port is unclear -> `expose <port>` | URL from output, `list --check`, `inspect <id>` |
-| Add Basic Auth, Bearer token, IP rules, or temporary links | HTTPS `expose` or YAML access policy | `inspect <id>`, protected request behavior, `metrics <id>` when relevant |
+| Add Basic Auth, Bearer token, IP rules, rate limit, audit, or temporary links | HTTPS `expose`, `policy`, `share`, or YAML access policy | `inspect <id>`, `policy show/audit`, protected request behavior |
 | Expose SSH directly | `expose 22 --protocol ssh` | printed SSH host/port, `inspect <id> --remote`, user SSH client output |
 | Expose database, queue, MQTT, or arbitrary TCP | `template <protocol>` for guidance, then `expose <port> --protocol tcp` | printed `<host>:<node-port>`, protocol client, `list --check` |
 | Manage many tunnels or stable config | edit `sealtun.yaml`, then `apply --dry-run`, `diff`, real `apply` only when requested | apply output, `list`, `inspect` |
@@ -51,7 +51,7 @@ Follow this flow after the skill triggers:
 - `expose`: capture tunnel ID, public endpoint, and protocol-specific output; verify with `sealtun list --check` and `sealtun inspect <tunnel-id>`.
 - `apply`: run or recommend `apply --dry-run` and `diff` first; after real apply, verify every intended tunnel with `list` and `inspect`.
 - `domain add/set/clear`: verify with `domain status` or `domain verify`; for `add --wait`, report DNS/CNAME and certificate readiness separately.
-- `share create/revoke`: verify with `share list`; never repeat a one-time share token unless it is the command's immediate output.
+- `share create/revoke/rotate`: verify with `share list`; never repeat a one-time share token unless it is the command's immediate output.
 - `stop/start/cleanup`: verify with `list` or `inspect`; remember `stop` preserves entry resources while `cleanup` removes stopped, expired, stale, or error tunnel resources.
 - `dashboard`: confirm local or remote bind address, token/basic-auth posture, live status, Resources tab, command previews, and whether write actions require page confirmation plus backend `confirm`.
 - Troubleshooting: name the failing layer before proposing a mutation: local login/profile, local port, daemon/session, remote resource, DNS/certificate, access policy, or user protocol/auth.
@@ -63,7 +63,9 @@ Follow this flow after the skill triggers:
 - For SSH exposure, prefer `sealtun expose 22 --protocol ssh` when the region supports public TCP NodePort. Use `sealtun ssh connect <tunnel-id>` only as a WebSocket ProxyCommand fallback.
 - For generic TCP exposure, prefer `sealtun expose <port> --protocol tcp` and report the generated `<public-host>:<node-port>` endpoint.
 - For declarative work, run or recommend `sealtun apply -f sealtun.yaml --dry-run` and `sealtun diff -f sealtun.yaml` before a real apply when feasible.
-- For temporary share links, use `sealtun share create <tunnel-id> --ttl 1h --name review` only for HTTPS tunnels; tell users the URL is shown once because Sealtun stores only a token hash. Use `share list` for metadata and `share revoke` by name.
+- For HTTPS policy operations, use `policy show`, `policy set --rate-limit 60/m --audit`, and `policy audit --since 10m`; audit output must not include plaintext tokens, Authorization headers, or Basic Auth passwords.
+- For temporary share links, use `sealtun share create <tunnel-id> --ttl 1h --name review` only for HTTPS tunnels; tell users the URL is shown once because Sealtun stores only a token hash. Use `share rotate` to invalidate an old token and print a new one-time URL, `share list` for metadata, and `share revoke` by name.
+- For server secret rotation, use `sealtun rotate <tunnel-id> --server-secret`; note the new secret is one-time output and SSH/TCP access policy remains unchanged.
 - For exporting config, use `sealtun export <tunnel-id>` or `sealtun export --all -o sealtun.yaml`. Explain that stored password/token hashes cannot be recovered; `--include-secret-placeholders` emits env var placeholders.
 - For dashboard remote access, recommend `--basic-auth-user` plus `--basic-auth-password-env` with `--allow-remote`; `--open` is useful for local loopback dashboards. Dashboard live status uses a token-protected stream with polling fallback, and the Resources tab shows Kubernetes resource occupancy hints, not billing estimates.
 - For first-time users, prioritize a clear path: install, `sealtun login`, `sealtun init`, confirm region/profile, then create or apply a tunnel. Mention that login stores credentials under `~/.sealtun` and that profiles are useful for multiple Sealos accounts, regions, or workspaces.

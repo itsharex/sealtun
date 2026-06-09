@@ -96,6 +96,46 @@ func TestDashboardAPIRequiresToken(t *testing.T) {
 	}
 }
 
+func TestDashboardAuditRequiresToken(t *testing.T) {
+	t.Parallel()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/tunnels/web/audit", nil)
+	rec := httptest.NewRecorder()
+	dashboardServer{token: "secret"}.serveAPI(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d", rec.Code)
+	}
+}
+
+func TestDashboardSecurityMutationsRequireConfirmation(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		path string
+		body string
+		want string
+	}{
+		{path: "/api/tunnels/web/policy/set", body: `{"rateLimit":"60/m","auditEnabled":true}`, want: "policy-set:web"},
+		{path: "/api/tunnels/web/share/rotate", body: `{"name":"review","ttl":"1h"}`, want: "share-rotate:web"},
+		{path: "/api/tunnels/web/rotate/server-secret", body: `{}`, want: "rotate-server-secret:web"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.path, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, tt.path, strings.NewReader(tt.body))
+			req.Header.Set("X-Sealtun-Dashboard-Token", "secret")
+			rec := httptest.NewRecorder()
+			dashboardServer{token: "secret"}.serveAPI(rec, req)
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("expected 400, got %d body=%s", rec.Code, rec.Body.String())
+			}
+			if !strings.Contains(rec.Body.String(), tt.want) {
+				t.Fatalf("expected required confirmation %q, got %s", tt.want, rec.Body.String())
+			}
+		})
+	}
+}
+
 func TestDashboardDiscoverRequiresToken(t *testing.T) {
 	t.Parallel()
 
@@ -306,6 +346,12 @@ func TestDashboardLogQueryValidation(t *testing.T) {
 	if _, err := parseDashboardSince("-1s"); err == nil {
 		t.Fatal("expected negative since to be rejected")
 	}
+	if _, err := parseDashboardAuditLimit("1001"); err == nil {
+		t.Fatal("expected audit limit > 1000 to be rejected")
+	}
+	if got, err := parseDashboardAuditLimit(""); err != nil || got != 200 {
+		t.Fatalf("expected default audit limit 200, got %d err=%v", got, err)
+	}
 }
 
 func TestDashboardActiveKubeClientDoesNotMigrateLegacySealosConfig(t *testing.T) {
@@ -353,12 +399,13 @@ func TestDashboardHomeDoesNotEmbedTokenForRemoteMode(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	rec := httptest.NewRecorder()
-	dashboardServer{token: "secret", embedToken: false}.serveHome(rec, req)
+	token := "dashboard-api-key-xyz"
+	dashboardServer{token: token, embedToken: false}.serveHome(rec, req)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", rec.Code)
 	}
-	if strings.Contains(rec.Body.String(), "secret") {
+	if strings.Contains(rec.Body.String(), token) {
 		t.Fatal("remote dashboard home must not expose the API token")
 	}
 }
@@ -483,6 +530,9 @@ func TestDashboardHomeIncludesCommandPreviewForMutations(t *testing.T) {
 		"sealtun apply -f sealtun.yaml",
 		"sealtun domain add",
 		"sealtun domain verify",
+		"policySetCommand",
+		"shareRotateCommand",
+		"serverSecretRotateCommand",
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("dashboard home missing command preview marker %q", want)

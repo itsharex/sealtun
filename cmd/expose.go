@@ -54,7 +54,7 @@ and establishes a secure connection to forward traffic to your local port.`,
 			if basicAuthCredential != "" || basicAuthUser != "" || basicAuthPassword != "" || basicAuthPasswordEnv != "" {
 				return fmt.Errorf("basic auth flags are only supported for https tunnels")
 			}
-			if bearerToken != "" || bearerTokenEnv != "" || len(ipAllowlist) > 0 || len(ipDenylist) > 0 || temporaryAccessToken != "" || temporaryAccessTokenEnv != "" {
+			if bearerToken != "" || bearerTokenEnv != "" || len(ipAllowlist) > 0 || len(ipDenylist) > 0 || temporaryAccessToken != "" || temporaryAccessTokenEnv != "" || accessRateLimit != "" || accessAuditEnabled {
 				return fmt.Errorf("access policy flags are only supported for https tunnels")
 			}
 		}
@@ -110,6 +110,8 @@ and establishes a secure connection to forward traffic to your local port.`,
 			TemporaryTokenEnv: temporaryAccessTokenEnv,
 			TemporaryTTL:      temporaryAccessTTL,
 			TemporaryName:     "default",
+			RateLimit:         accessRateLimit,
+			AuditEnabled:      accessAuditEnabled,
 		}, nowUTC(), getenv)
 		if err != nil {
 			return err
@@ -283,6 +285,8 @@ var ipDenylist []string
 var temporaryAccessToken string
 var temporaryAccessTokenEnv string
 var temporaryAccessTTL time.Duration
+var accessRateLimit string
+var accessAuditEnabled bool
 
 const daemonConnectTimeout = 60 * time.Second
 const daemonConnectionStability = 2 * time.Second
@@ -307,6 +311,8 @@ func init() {
 	exposeCmd.Flags().StringVar(&temporaryAccessToken, "temporary-access-token", "", "Enable a temporary access URL token; prefer --temporary-access-token-env")
 	exposeCmd.Flags().StringVar(&temporaryAccessTokenEnv, "temporary-access-token-env", "", "Read temporary access URL token from an environment variable")
 	exposeCmd.Flags().DurationVar(&temporaryAccessTTL, "temporary-access-ttl", time.Hour, "Temporary access URL lifetime")
+	exposeCmd.Flags().StringVar(&accessRateLimit, "rate-limit", "", "Rate limit HTTPS public traffic, e.g. 60/m or 1000/h")
+	exposeCmd.Flags().BoolVar(&accessAuditEnabled, "audit", false, "Enable HTTPS access audit for allow/deny decisions")
 }
 
 func printAccessPolicySummary(config *session.AccessPolicy) {
@@ -324,6 +330,12 @@ func printAccessPolicySummary(config *session.AccessPolicy) {
 	}
 	if len(config.TemporaryTokens) > 0 {
 		fmt.Printf("[+] Temporary access link enabled until %s.\n", config.TemporaryTokens[0].ExpiresAt)
+	}
+	if config.RateLimit != "" {
+		fmt.Printf("[+] Rate limit enabled: %s.\n", config.RateLimit)
+	}
+	if config.Audit != nil && config.Audit.Enabled {
+		fmt.Printf("[+] Access audit enabled for public traffic.\n")
 	}
 }
 

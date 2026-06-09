@@ -41,6 +41,9 @@ type Server struct {
 	accessPolicy               *accesspolicy.Policy
 	basicAuthAuthorizedHeaders sync.Map
 	basicAuthCacheCount        atomic.Int64
+	rateLimiter                *accesspolicy.RateLimiter
+	auditMu                    sync.Mutex
+	auditEvents                []accesspolicy.AuditEvent
 
 	mu            sync.RWMutex
 	activeSession *yamux.Session
@@ -68,6 +71,12 @@ func NewServer(secret string, port int, protocol string, localPort string) *Serv
 }
 
 func NewServerWithOptions(secret string, port int, protocol string, localPort string, opts ServerOptions) *Server {
+	rateLimiter := (*accesspolicy.RateLimiter)(nil)
+	if opts.AccessPolicy != nil && strings.TrimSpace(opts.AccessPolicy.RateLimit) != "" {
+		if spec, err := accesspolicy.ParseRateLimit(opts.AccessPolicy.RateLimit); err == nil {
+			rateLimiter = accesspolicy.NewRateLimiter(spec)
+		}
+	}
 	s := &Server{
 		secret:       secret,
 		port:         port,
@@ -75,6 +84,7 @@ func NewServerWithOptions(secret string, port int, protocol string, localPort st
 		localPort:    localPort,
 		basicAuth:    opts.BasicAuth,
 		accessPolicy: opts.AccessPolicy,
+		rateLimiter:  rateLimiter,
 		upgrader: websocket.Upgrader{
 			// The tunnel control/TCP WebSocket endpoints are only ever dialed by
 			// the non-browser Sealtun CLI client, which never sets an Origin
@@ -132,6 +142,10 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if r.URL.Path == "/_sealtun/metrics" {
 		s.handleMetrics(w, r)
+		return
+	}
+	if r.URL.Path == "/_sealtun/audit" {
+		s.handleAudit(w, r)
 		return
 	}
 
@@ -226,6 +240,31 @@ func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(payload)
 }
 
+func (s *Server) handleAudit(w http.ResponseWriter, r *http.Request) {
+	if !requireReadOnlyMethod(w, r) {
+		return
+	}
+	if !s.authorized(r) {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+	since, err := parseAuditSince(r.URL.Query().Get("since"))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	limit, err := parseAuditLimit(r.URL.Query().Get("limit"))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	payload := s.auditPayload(since, limit)
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(payload)
+}
+
 func requireReadOnlyMethod(w http.ResponseWriter, r *http.Request) bool {
 	if r.Method == http.MethodGet || r.Method == http.MethodHead {
 		return true
@@ -236,8 +275,15 @@ func requireReadOnlyMethod(w http.ResponseWriter, r *http.Request) bool {
 }
 
 func (s *Server) handlePublicTraffic(w http.ResponseWriter, r *http.Request) {
+	clientIP := accesspolicy.ClientIP(r)
 	if ok, reason := accesspolicy.NetworkAllowed(s.accessPolicy, r); !ok {
+		s.recordRequestAudit(r, "deny", auditReasonForIPDeny(reason), http.StatusForbidden, clientIP)
 		http.Error(w, reason, http.StatusForbidden)
+		return
+	}
+	if s.rateLimiter != nil && !s.rateLimiter.Allow(rateLimitKey(clientIP), time.Now()) {
+		s.recordRequestAudit(r, "deny", "rate-limit", http.StatusTooManyRequests, clientIP)
+		http.Error(w, "rate limit exceeded", http.StatusTooManyRequests)
 		return
 	}
 	authKind, ok := s.authorizedPublicTraffic(r)
@@ -248,6 +294,7 @@ func (s *Server) handlePublicTraffic(w http.ResponseWriter, r *http.Request) {
 		if accesspolicy.HasTokenAuth(s.accessPolicy) {
 			w.Header().Add("WWW-Authenticate", `Bearer realm="Sealtun Tunnel"`)
 		}
+		s.recordRequestAudit(r, "deny", auditDeniedAuthReason(r), http.StatusUnauthorized, clientIP)
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 		return
 	}
@@ -272,6 +319,7 @@ func (s *Server) handlePublicTraffic(w http.ResponseWriter, r *http.Request) {
 	if status >= 500 {
 		s.total5xx.Add(1)
 	}
+	s.recordRequestAudit(r, "allow", authKind.auditReason(), status, clientIP)
 	fmt.Printf("request method=%s path=%q status=%d bytes=%d duration=%s\n", r.Method, redactedRequestPath(r), status, recorder.bytes, time.Since(start).Round(time.Millisecond))
 }
 
@@ -283,6 +331,155 @@ const (
 	publicAuthBearer
 	publicAuthTemporary
 )
+
+func (k publicAuthKind) auditReason() string {
+	switch k {
+	case publicAuthBasic:
+		return "basic-auth"
+	case publicAuthBearer:
+		return "bearer"
+	case publicAuthTemporary:
+		return "temporary-token"
+	default:
+		return "none"
+	}
+}
+
+const maxAuditEvents = 1000
+
+func (s *Server) recordRequestAudit(r *http.Request, decision, reason string, status int, clientIP net.IP) {
+	if !accesspolicy.AuditEnabled(s.accessPolicy) {
+		return
+	}
+	event := accesspolicy.AuditEvent{
+		Time:     time.Now().UTC().Format(time.RFC3339),
+		Decision: decision,
+		Reason:   reason,
+		Method:   "",
+		Path:     "",
+		Status:   status,
+	}
+	if r != nil {
+		event.Method = r.Method
+		if r.URL != nil {
+			event.Path = r.URL.EscapedPath()
+			if event.Path == "" {
+				event.Path = "/"
+			}
+		}
+	}
+	if clientIP != nil {
+		event.ClientIP = clientIP.String()
+	}
+	s.auditMu.Lock()
+	defer s.auditMu.Unlock()
+	s.auditEvents = append(s.auditEvents, event)
+	if len(s.auditEvents) > maxAuditEvents {
+		copy(s.auditEvents, s.auditEvents[len(s.auditEvents)-maxAuditEvents:])
+		s.auditEvents = s.auditEvents[:maxAuditEvents]
+	}
+}
+
+func (s *Server) auditPayload(since time.Duration, limit int) accesspolicy.AuditPayload {
+	cutoff := time.Time{}
+	if since > 0 {
+		cutoff = time.Now().UTC().Add(-since)
+	}
+	s.auditMu.Lock()
+	defer s.auditMu.Unlock()
+
+	filtered := make([]accesspolicy.AuditEvent, 0, len(s.auditEvents))
+	for _, event := range s.auditEvents {
+		if !cutoff.IsZero() {
+			eventTime, err := time.Parse(time.RFC3339, event.Time)
+			if err != nil || eventTime.Before(cutoff) {
+				continue
+			}
+		}
+		filtered = append(filtered, event)
+	}
+	total := len(filtered)
+	if limit > 0 && len(filtered) > limit {
+		filtered = filtered[len(filtered)-limit:]
+	}
+	return accesspolicy.AuditPayload{Events: append([]accesspolicy.AuditEvent(nil), filtered...), Total: total}
+}
+
+func parseAuditSince(value string) (time.Duration, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return 10 * time.Minute, nil
+	}
+	since, err := time.ParseDuration(value)
+	if err != nil || since < 0 {
+		return 0, fmt.Errorf("since must be a non-negative duration")
+	}
+	return since, nil
+}
+
+func parseAuditLimit(value string) (int, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return 200, nil
+	}
+	limit, err := parsePositiveAuditInt(value)
+	if err != nil || limit > maxAuditEvents {
+		return 0, fmt.Errorf("limit must be between 1 and %d", maxAuditEvents)
+	}
+	return limit, nil
+}
+
+func parsePositiveAuditInt(value string) (int, error) {
+	var out int
+	for _, ch := range value {
+		if ch < '0' || ch > '9' {
+			return 0, fmt.Errorf("not a number")
+		}
+		out = out*10 + int(ch-'0')
+	}
+	if out <= 0 {
+		return 0, fmt.Errorf("not positive")
+	}
+	return out, nil
+}
+
+func rateLimitKey(ip net.IP) string {
+	if ip == nil {
+		return "unknown"
+	}
+	return ip.String()
+}
+
+func auditReasonForIPDeny(reason string) string {
+	reason = strings.ToLower(strings.TrimSpace(reason))
+	if strings.Contains(reason, "deny") || strings.Contains(reason, "denied") {
+		return "ip-denylist"
+	}
+	if strings.Contains(reason, "allow") || strings.Contains(reason, "not allowed") {
+		return "ip-allowlist"
+	}
+	return "ip-rule"
+}
+
+func auditDeniedAuthReason(r *http.Request) string {
+	if r == nil {
+		return "no-auth"
+	}
+	if strings.TrimSpace(r.Header.Get("Authorization")) != "" {
+		authHeader := strings.TrimSpace(r.Header.Get("Authorization"))
+		if strings.HasPrefix(strings.ToLower(authHeader), "basic ") {
+			return "basic-auth"
+		}
+		if strings.HasPrefix(strings.ToLower(authHeader), "bearer ") {
+			return "bearer"
+		}
+		return "authorization"
+	}
+	if r.URL != nil && strings.TrimSpace(r.URL.Query().Get(accesspolicy.TemporaryTokenQueryParam)) != "" {
+		return "temporary-token"
+	}
+	return "no-auth"
+}
 
 func (s *Server) authorizedPublicTraffic(r *http.Request) (publicAuthKind, bool) {
 	requiresBasic := s.basicAuth != nil

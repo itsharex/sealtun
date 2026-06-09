@@ -13,7 +13,7 @@ Use these paths before listing every available flag:
 | "Give my local app a public domain" / "给本地服务一个公网域名" | `sealtun expose <port> --domain <domain>` or `sealtun domain plan <id> <domain>` | If the tunnel already exists, plan first, then add/set only when mutation is requested. |
 | "Expose SSH publicly" / "公网 SSH" | `sealtun expose 22 --protocol ssh` | Return `ssh <user>@<public-host> -p <node-port>`. Do not add HTTPS auth/domain features. |
 | "Expose Postgres/MySQL/Redis/MQTT" | `sealtun template postgres`; `sealtun expose 5432 --protocol tcp` | Common protocol templates map to generic TCP. Return `<host>:<node-port>`. |
-| "Secure this public URL" | HTTPS `expose` with Basic Auth, Bearer token, IP rules, or temporary links | Prefer env-backed secrets. HTTP access controls do not protect SSH/TCP NodePort. |
+| "Secure this public URL" | HTTPS `expose`, `policy set`, or `share` with Basic Auth, Bearer token, IP rules, rate limit, audit, or temporary links | Prefer env-backed secrets. HTTP access controls do not protect SSH/TCP NodePort. |
 | "Show or operate everything in a UI" | `sealtun dashboard --open` | Remote dashboard needs `--allow-remote` and should use dashboard Basic Auth. |
 
 After any live operation, verify using the matching command: `list --check`, `inspect <id>`, `domain status/verify`, `share list`, or `doctor <id>`.
@@ -106,6 +106,8 @@ export SEALTUN_TEMP_TOKEN='review-link-secret'
 sealtun expose 3000 \
   --temporary-access-token-env SEALTUN_TEMP_TOKEN \
   --temporary-access-ttl 1h
+
+sealtun expose 3000 --rate-limit 60/m --audit
 ```
 
 One-shot forms exist, but warn that they can enter shell history:
@@ -123,6 +125,21 @@ Token constraints and behavior:
 - Temporary access uses `?_sealtun_token=<token>` and strips that query parameter before forwarding upstream.
 - IP rules accept individual IPs or CIDR ranges. Sealtun reads `X-Real-IP`, then the last valid proxy-confirmed client IP in `X-Forwarded-For`, then `RemoteAddr`.
 - When Basic Auth and Bearer or temporary links are both configured, either authentication path can allow the request, subject to IP rules.
+- Rate limits use fixed-window specs such as `60/m` or `1000/h`.
+- Access audit records allow/deny reason, status, path, and client IP. It must not expose plaintext tokens, Authorization headers, Basic Auth passwords, or temporary-link tokens.
+
+Manage policy on an existing HTTPS tunnel:
+
+```bash
+sealtun policy show <tunnel-id>
+sealtun policy set <tunnel-id> --rate-limit 60/m --audit
+sealtun policy set <tunnel-id> --clear-rate-limit
+sealtun policy set <tunnel-id> --no-audit
+sealtun policy audit <tunnel-id> --since 10m
+sealtun policy audit <tunnel-id> --since 10m --json
+```
+
+Use `policy audit` when the user asks why access was allowed or denied. Reasons include Basic Auth, Bearer, temporary token, IP rule, and rate limit.
 
 ## Custom Domains
 
@@ -257,7 +274,7 @@ Dashboard is a local workbench by default. It can create HTTPS/SSH/TCP tunnels, 
 
 `doctor --fix --dry-run` prints conservative automatic fixes without executing them. `doctor --fix` may start stopped tunnels, clean expired/stale sessions, or start the local daemon. It must not run `cleanup --all`, logout, DNS provider changes, or cleanup active tunnels.
 
-Dashboard live status uses a token-protected stream and automatically falls back to polling if the stream disconnects. The Resources tab shows the same Kubernetes resource occupancy hints. Write actions preview the equivalent CLI command before confirmation.
+Dashboard live status uses a token-protected stream and automatically falls back to polling if the stream disconnects. The Resources tab shows the same Kubernetes resource occupancy hints. The Audit tab shows HTTPS access audit, policy settings, share rotation, and server-secret rotation. Write actions preview the equivalent CLI command before confirmation.
 
 Every dashboard API request requires the dashboard token. Mutating actions require a confirmation in the page and a backend `confirm` value such as `stop:<tunnel-id>` or `apply:dashboard-yaml`. `--allow-remote` allows a non-loopback dashboard address and should be treated as a security-sensitive choice; remote mode does not embed the token in HTML. For remote dashboards, recommend adding dashboard Basic Auth with `--basic-auth-user` and `--basic-auth-password-env`. `--open` opens the dashboard URL for local workflows.
 
@@ -269,10 +286,19 @@ Use `doctor <tunnel-id>` for "why can't I connect" issues. It checks the local s
 sealtun share create <tunnel-id> --name review --ttl 1h
 sealtun share create <tunnel-id> --name qa --ttl 2h --open
 sealtun share list <tunnel-id>
+sealtun share rotate <tunnel-id> review --ttl 1h
 sealtun share revoke <tunnel-id> review
 ```
 
-Temporary share links only apply to HTTPS tunnels. `share create` updates the tunnel access policy and prints a URL with `?_sealtun_token=...`; the URL is shown only once because Sealtun stores only a token hash. `share list` shows names and expiry metadata without tokens. `share revoke` removes the token by name.
+Temporary share links only apply to HTTPS tunnels. `share create` updates the tunnel access policy and prints a URL with `?_sealtun_token=...`; the URL is shown only once because Sealtun stores only a token hash. `share rotate` replaces an existing named token, invalidates the old URL, and prints the new URL once. `share list` shows names and expiry metadata without tokens. `share revoke` removes the token by name.
+
+## Rotation
+
+```bash
+sealtun rotate <tunnel-id> --server-secret
+```
+
+Use this for tunnel server secret rotation. The new secret is shown once and saved locally. It updates the remote Deployment and does not change the SSH/TCP access model; HTTPS access policies still apply only to public HTTPS traffic.
 
 ## Export YAML
 

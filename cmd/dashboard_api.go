@@ -48,6 +48,8 @@ type dashboardTunnelCreateRequest struct {
 	IPDenylist           []string `json:"ipDenylist,omitempty"`
 	TemporaryAccessToken string   `json:"temporaryAccessToken,omitempty"`
 	TemporaryAccessTTL   string   `json:"temporaryAccessTTL,omitempty"`
+	RateLimit            string   `json:"rateLimit,omitempty"`
+	AuditEnabled         bool     `json:"auditEnabled,omitempty"`
 }
 
 type dashboardApplyRequest struct {
@@ -60,6 +62,19 @@ type dashboardDomainRequest struct {
 	Domain  string `json:"domain,omitempty"`
 	Wait    bool   `json:"wait,omitempty"`
 	Timeout string `json:"timeout,omitempty"`
+}
+
+type dashboardPolicySetRequest struct {
+	Confirm        string `json:"confirm,omitempty"`
+	RateLimit      string `json:"rateLimit,omitempty"`
+	ClearRateLimit bool   `json:"clearRateLimit,omitempty"`
+	AuditEnabled   *bool  `json:"auditEnabled,omitempty"`
+}
+
+type dashboardShareRotateRequest struct {
+	Confirm string `json:"confirm,omitempty"`
+	Name    string `json:"name"`
+	TTL     string `json:"ttl,omitempty"`
 }
 
 type dashboardWatchEvent struct {
@@ -125,6 +140,17 @@ func (s dashboardServer) serveTunnelReadAPI(w http.ResponseWriter, r *http.Reque
 	case "resources":
 		payload, err := dashboardTunnelResources(r.Context(), tunnelID)
 		writeDashboardResult(w, "resources loaded", payload, err)
+	case "policy":
+		sess, err := dashboardScopedSession(tunnelID)
+		if err != nil {
+			writeDashboardResult(w, "policy loaded", nil, err)
+			return
+		}
+		payload, err := policyShowPayloadFromSession(*sess, nowUTC())
+		writeDashboardResult(w, "policy loaded", payload, err)
+	case "audit":
+		payload, err := dashboardTunnelAudit(r.Context(), tunnelID, r)
+		writeDashboardResult(w, "audit loaded", payload, err)
 	default:
 		writeDashboardError(w, http.StatusNotFound, "dashboard tunnel API route not found")
 	}
@@ -172,6 +198,21 @@ func (s dashboardServer) serveTunnelMutationAPI(w http.ResponseWriter, r *http.R
 		writeDashboardResult(w, fmt.Sprintf("cleaned up tunnel %s", tunnelID), nil, err)
 	case "domain/plan", "domain/add", "domain/clear", "domain/verify":
 		s.serveDomainAPI(w, r, tunnelID, strings.TrimPrefix(action, "domain/"))
+	case "policy/set":
+		s.servePolicySetAPI(w, r, tunnelID)
+	case "rotate/server-secret":
+		req, err := readDashboardJSON[dashboardConfirmRequest](r, 4096)
+		if err != nil {
+			writeDashboardError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		if !requireDashboardConfirm(w, req.Confirm, "rotate-server-secret", tunnelID) {
+			return
+		}
+		payload, err := rotateTunnelServerSecret(r.Context(), tunnelID)
+		writeDashboardResult(w, "server secret rotated", payload, err)
+	case "share/rotate":
+		s.serveShareRotateAPI(w, r, tunnelID)
 	default:
 		writeDashboardError(w, http.StatusNotFound, "dashboard tunnel API route not found")
 	}
@@ -286,6 +327,46 @@ func (s dashboardServer) serveDomainAPI(w http.ResponseWriter, r *http.Request, 
 	default:
 		writeDashboardError(w, http.StatusNotFound, "dashboard domain API route not found")
 	}
+}
+
+func (s dashboardServer) servePolicySetAPI(w http.ResponseWriter, r *http.Request, tunnelID string) {
+	req, err := readDashboardJSON[dashboardPolicySetRequest](r, 16*1024)
+	if err != nil {
+		writeDashboardError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if !requireDashboardConfirm(w, req.Confirm, "policy-set", tunnelID) {
+		return
+	}
+	auditEnabled := false
+	auditDisabled := false
+	if req.AuditEnabled != nil {
+		auditEnabled = *req.AuditEnabled
+		auditDisabled = !*req.AuditEnabled
+	}
+	payload, err := setPolicy(r.Context(), tunnelID, req.RateLimit, req.ClearRateLimit, auditEnabled, auditDisabled)
+	writeDashboardResult(w, "policy updated", payload, err)
+}
+
+func (s dashboardServer) serveShareRotateAPI(w http.ResponseWriter, r *http.Request, tunnelID string) {
+	req, err := readDashboardJSON[dashboardShareRotateRequest](r, 16*1024)
+	if err != nil {
+		writeDashboardError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if !requireDashboardConfirm(w, req.Confirm, "share-rotate", tunnelID) {
+		return
+	}
+	ttl := time.Hour
+	if strings.TrimSpace(req.TTL) != "" {
+		ttl, err = time.ParseDuration(req.TTL)
+		if err != nil || ttl <= 0 {
+			writeDashboardError(w, http.StatusBadRequest, "ttl must be greater than 0")
+			return
+		}
+	}
+	payload, err := rotateShareLink(r.Context(), tunnelID, req.Name, ttl)
+	writeDashboardResult(w, "share link rotated", payload, err)
 }
 
 func splitDashboardTunnelAction(rest string) (string, string, bool) {
@@ -457,6 +538,21 @@ func dashboardTunnelResources(ctx context.Context, tunnelID string) (*k8s.Tunnel
 	return client.WithNamespace(sess.Namespace).TunnelResources(resourceCtx, sess.TunnelID)
 }
 
+func dashboardTunnelAudit(ctx context.Context, tunnelID string, r *http.Request) (*policyAuditPayload, error) {
+	since, err := parseDashboardSince(r.URL.Query().Get("since"))
+	if err != nil {
+		return nil, err
+	}
+	if since == 0 {
+		since = 10 * time.Minute
+	}
+	limit, err := parseDashboardAuditLimit(r.URL.Query().Get("limit"))
+	if err != nil {
+		return nil, err
+	}
+	return collectPolicyAudit(ctx, tunnelID, since, limit)
+}
+
 func dashboardScopedSession(tunnelID string) (*session.TunnelSession, error) {
 	sess, err := findSession(tunnelID)
 	if err != nil {
@@ -506,6 +602,17 @@ func parseDashboardTimeout(value string, fallback time.Duration) (time.Duration,
 		return 0, fmt.Errorf("timeout must be greater than 0")
 	}
 	return timeout, nil
+}
+
+func parseDashboardAuditLimit(value string) (int, error) {
+	if strings.TrimSpace(value) == "" {
+		return 200, nil
+	}
+	limit, err := strconv.Atoi(strings.TrimSpace(value))
+	if err != nil || limit < 1 || limit > 1000 {
+		return 0, fmt.Errorf("limit must be between 1 and 1000")
+	}
+	return limit, nil
 }
 
 func validateDashboardDomain(value string) (string, error) {
@@ -630,11 +737,15 @@ func createDashboardTunnel(ctx context.Context, req dashboardTunnelCreateRequest
 		}
 	}
 	policy := (*applyAccessPolicy)(nil)
-	if req.BearerToken != "" || len(req.IPAllowlist) > 0 || len(req.IPDenylist) > 0 || req.TemporaryAccessToken != "" {
+	if req.BearerToken != "" || len(req.IPAllowlist) > 0 || len(req.IPDenylist) > 0 || req.TemporaryAccessToken != "" || req.RateLimit != "" || req.AuditEnabled {
 		policy = &applyAccessPolicy{
 			BearerToken: req.BearerToken,
 			IPAllowlist: append([]string(nil), req.IPAllowlist...),
 			IPDenylist:  append([]string(nil), req.IPDenylist...),
+			RateLimit:   req.RateLimit,
+		}
+		if req.AuditEnabled {
+			policy.Audit = &applyAuditConfig{Enabled: true}
 		}
 		if req.TemporaryAccessToken != "" {
 			policy.TemporaryLinks = []applyTemporaryLink{{

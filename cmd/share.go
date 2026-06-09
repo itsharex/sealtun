@@ -12,7 +12,6 @@ import (
 
 	"github.com/labring/sealtun/pkg/accesspolicy"
 	"github.com/labring/sealtun/pkg/k8s"
-	tunnelprotocol "github.com/labring/sealtun/pkg/protocol"
 	"github.com/labring/sealtun/pkg/session"
 	"github.com/spf13/cobra"
 )
@@ -106,9 +105,32 @@ var shareRevokeCmd = &cobra.Command{
 	},
 }
 
+var shareRotateCmd = &cobra.Command{
+	Use:          "rotate [tunnel-id] [name]",
+	Short:        "Rotate a temporary access link token",
+	Args:         cobra.ExactArgs(2),
+	SilenceUsage: true,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		payload, err := rotateShareLink(cmd.Context(), args[0], args[1], shareTTL)
+		if err != nil {
+			return err
+		}
+		if shareJSON {
+			enc := json.NewEncoder(cmd.OutOrStdout())
+			enc.SetIndent("", "  ")
+			return enc.Encode(payload)
+		}
+		printShareCreate(cmd, payload)
+		if shareOpen {
+			openBrowser(payload.URL)
+		}
+		return nil
+	},
+}
+
 func init() {
 	rootCmd.AddCommand(shareCmd)
-	shareCmd.AddCommand(shareCreateCmd, shareListCmd, shareRevokeCmd)
+	shareCmd.AddCommand(shareCreateCmd, shareListCmd, shareRevokeCmd, shareRotateCmd)
 
 	shareCreateCmd.Flags().StringVar(&shareName, "name", "share", "Temporary link name")
 	shareCreateCmd.Flags().DurationVar(&shareTTL, "ttl", time.Hour, "Temporary link lifetime")
@@ -116,6 +138,9 @@ func init() {
 	shareCreateCmd.Flags().BoolVar(&shareJSON, "json", false, "Output the created link as JSON")
 	shareCreateCmd.Flags().BoolVar(&shareOpen, "open", false, "Open the temporary access URL in the browser")
 	shareListCmd.Flags().BoolVar(&shareListJSON, "json", false, "Output temporary link metadata as JSON")
+	shareRotateCmd.Flags().DurationVar(&shareTTL, "ttl", time.Hour, "Rotated temporary link lifetime")
+	shareRotateCmd.Flags().BoolVar(&shareJSON, "json", false, "Output the rotated link as JSON")
+	shareRotateCmd.Flags().BoolVar(&shareOpen, "open", false, "Open the rotated temporary access URL in the browser")
 }
 
 func createShareLink(ctx context.Context, tunnelID, name string, ttl time.Duration, token string) (*shareCreatePayload, error) {
@@ -130,7 +155,7 @@ func createShareLink(ctx context.Context, tunnelID, name string, ttl time.Durati
 	if err != nil {
 		return nil, err
 	}
-	if !tunnelprotocol.IsHTTP(sess.Protocol) {
+	if !sessionUsesHTTP(*sess) {
 		return nil, fmt.Errorf("temporary share links are only supported for https tunnels")
 	}
 	if sess.ConnectionState == session.ConnectionStateStopped {
@@ -198,7 +223,7 @@ func revokeShareLink(ctx context.Context, tunnelID, name string) error {
 	if err != nil {
 		return err
 	}
-	if !tunnelprotocol.IsHTTP(sess.Protocol) {
+	if !sessionUsesHTTP(*sess) {
 		return fmt.Errorf("temporary share links are only supported for https tunnels")
 	}
 	if sess.ConnectionState == session.ConnectionStateStopped {
@@ -224,6 +249,64 @@ func revokeShareLink(ctx context.Context, tunnelID, name string) error {
 	return updateHTTPSAccessPolicy(ctx, sess, emptyAccessPolicyAsNil(next))
 }
 
+func rotateShareLink(ctx context.Context, tunnelID, name string, ttl time.Duration) (*shareCreatePayload, error) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return nil, fmt.Errorf("share name is required")
+	}
+	if ttl <= 0 {
+		return nil, fmt.Errorf("share ttl must be greater than 0")
+	}
+	sess, err := findSession(tunnelID)
+	if err != nil {
+		return nil, err
+	}
+	if !sessionUsesHTTP(*sess) {
+		return nil, fmt.Errorf("temporary share links are only supported for https tunnels")
+	}
+	if sess.ConnectionState == session.ConnectionStateStopped {
+		return nil, fmt.Errorf("tunnel %s is stopped; run `sealtun start %s` before rotating share links", sess.TunnelID, sess.TunnelID)
+	}
+	if sessionExpired(*sess, nowUTC()) {
+		return nil, fmt.Errorf("tunnel %s has expired; run cleanup and recreate the tunnel", sess.TunnelID)
+	}
+	next := cloneAccessPolicy(sess.AccessPolicy)
+	found := false
+	for _, token := range next.TemporaryTokens {
+		if token.Name == name {
+			found = true
+			break
+		}
+	}
+	if !found {
+		return nil, fmt.Errorf("temporary access link %q not found for tunnel %s", name, sess.TunnelID)
+	}
+	token, err := generateShareToken()
+	if err != nil {
+		return nil, err
+	}
+	hash, err := accesspolicy.HashToken(token)
+	if err != nil {
+		return nil, fmt.Errorf("share token: %w", err)
+	}
+	expiresAt := nowUTC().Add(ttl).UTC().Format(time.RFC3339)
+	next.TemporaryTokens = replaceTemporaryToken(next.TemporaryTokens, session.TemporaryToken{
+		Name:      name,
+		TokenHash: hash,
+		TTL:       ttl.String(),
+		ExpiresAt: expiresAt,
+	})
+	if err := updateHTTPSAccessPolicy(ctx, sess, next); err != nil {
+		return nil, err
+	}
+	return &shareCreatePayload{
+		TunnelID:  sess.TunnelID,
+		Name:      name,
+		URL:       temporaryAccessURL(sharePublicHost(*sess), token),
+		ExpiresAt: expiresAt,
+	}, nil
+}
+
 func updateHTTPSAccessPolicy(ctx context.Context, sess *session.TunnelSession, policy *session.AccessPolicy) error {
 	if strings.TrimSpace(sess.Secret) == "" {
 		return fmt.Errorf("tunnel %s has no local secret; recreate it before updating access policy", sess.TunnelID)
@@ -233,7 +316,7 @@ func updateHTTPSAccessPolicy(ctx context.Context, sess *session.TunnelSession, p
 		return err
 	}
 	namespacedClient := client.WithNamespace(sess.Namespace)
-	hosts, err := namespacedClient.EnsureTunnelWithOptions(ctx, sess.TunnelID, sess.Secret, sess.Protocol, sess.LocalPort, k8s.TunnelOptions{
+	hosts, err := namespacedClient.EnsureTunnelWithOptions(ctx, sess.TunnelID, sess.Secret, sessionProtocol(*sess), sess.LocalPort, k8s.TunnelOptions{
 		CustomDomain: sess.CustomDomain,
 		SealosHost:   sessionSealosHostForDomain(*sess, namespacedClient.SealosHost(sess.TunnelID)),
 		BasicAuth:    basicAuthToK8s(sess.BasicAuth),
@@ -262,7 +345,16 @@ func cloneAccessPolicy(policy *session.AccessPolicy) *session.AccessPolicy {
 		IPAllowlist:       append([]string(nil), policy.IPAllowlist...),
 		IPDenylist:        append([]string(nil), policy.IPDenylist...),
 		TemporaryTokens:   append([]session.TemporaryToken(nil), policy.TemporaryTokens...),
+		RateLimit:         policy.RateLimit,
+		Audit:             cloneSessionAuditConfig(policy.Audit),
 	}
+}
+
+func cloneSessionAuditConfig(config *session.AuditConfig) *session.AuditConfig {
+	if config == nil {
+		return nil
+	}
+	return &session.AuditConfig{Enabled: config.Enabled}
 }
 
 func emptyAccessPolicyAsNil(policy *session.AccessPolicy) *session.AccessPolicy {

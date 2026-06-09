@@ -1005,6 +1005,7 @@ var dashboardHTML = template.Must(template.New("dashboard").Parse(`<!doctype htm
       display: inline-flex;
       align-items: center;
       gap: 12px;
+      flex-wrap: wrap;
       white-space: nowrap;
     }
     .action-text {
@@ -1145,6 +1146,23 @@ var dashboardHTML = template.Must(template.New("dashboard").Parse(`<!doctype htm
       font-family: var(--mono);
       font-size: 18px;
       font-weight: 700;
+    }
+    .input.compact {
+      max-width: 120px;
+      height: 32px;
+      padding: 6px 8px;
+    }
+    .checkline {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      color: var(--ink);
+      font-size: 12px;
+      font-weight: 650;
+    }
+    .checkline input {
+      width: 14px;
+      height: 14px;
     }
     .yaml {
       padding: 16px;
@@ -1460,6 +1478,7 @@ var dashboardHTML = template.Must(template.New("dashboard").Parse(`<!doctype htm
           <button class="tab" data-tab="metrics" type="button">Metrics</button>
           <button class="tab" data-tab="events" type="button">Events</button>
           <button class="tab" data-tab="resources" type="button">Resources</button>
+          <button class="tab" data-tab="audit" type="button">Audit</button>
           <button class="tab" data-tab="domain" type="button">Domain</button>
           <button class="tab" data-tab="config" type="button">Config</button>
         </nav>
@@ -1795,6 +1814,7 @@ var dashboardHTML = template.Must(template.New("dashboard").Parse(`<!doctype htm
       if (activeTab === "metrics") target.innerHTML = metricsPanel(t);
       if (activeTab === "events") target.innerHTML = eventsPanel(t);
       if (activeTab === "resources") target.innerHTML = resourcesPanel(t);
+      if (activeTab === "audit") target.innerHTML = auditPanel(t);
       if (activeTab === "domain") target.innerHTML = domainPanel(t);
       if (activeTab === "config") target.innerHTML = configPanel(t);
       loadActiveTabData(t).catch(err => showToast(err.message || String(err), true));
@@ -1817,6 +1837,10 @@ var dashboardHTML = template.Must(template.New("dashboard").Parse(`<!doctype htm
       if (activeTab === "metrics") data = await apiFetch("/api/tunnels/" + id + "/metrics");
       if (activeTab === "events") data = await apiFetch("/api/tunnels/" + id + "/events");
       if (activeTab === "resources") data = await apiFetch("/api/tunnels/" + id + "/resources");
+      if (activeTab === "audit") data = {
+        audit: await apiFetch("/api/tunnels/" + id + "/audit?since=10m&limit=200"),
+        policy: await apiFetch("/api/tunnels/" + id + "/policy")
+      };
       setTabCache(t, activeTab, data);
       if (selected()?.tunnelId === t.tunnelId) {
         renderTab();
@@ -1864,6 +1888,37 @@ var dashboardHTML = template.Must(template.New("dashboard").Parse(`<!doctype htm
           '<div><span class="tag">' + esc(item.status || "-") + '</span><div class="resource-hints">managed=' + esc(item.managed ? "yes" : "no") + (item.age ? " · age=" + esc(item.age) : "") + '</div></div>' +
         '</div>';
       }).join("") + '</div>';
+    }
+
+    function auditPanel(t) {
+      const protocol = t.protocol || "https";
+      if (protocol !== "https") {
+        return '<div class="panel-grid">' +
+          small("Access Policy", "HTTPS only") +
+          small(protocol === "ssh" ? "Public SSH" : "Public TCP", publicEndpointFor(t) || "-") +
+          small("Model", "Raw TCP NodePort") +
+        '</div>';
+      }
+      const data = tabCache(t, "audit");
+      if (!data) return '<div class="empty"><div><strong>Loading audit</strong><div>Fetching access policy and recent audit events.</div></div></div>';
+      const policy = data.policy || {};
+      const audit = data.audit || {};
+      const events = audit.events || [];
+      const rows = events.length ? events.map(ev =>
+        '<div class="resource-row">' +
+          '<div><strong>' + esc(ev.decision || "-") + '</strong><div class="muted mono">' + esc((ev.time || "").replace("T", " ").replace("Z", "")) + '</div></div>' +
+          '<div><div class="mono">' + esc(ev.reason || "-") + '</div><div class="resource-hints">' + esc((ev.method || "-") + " " + (ev.path || "-")) + '</div></div>' +
+          '<div><span class="tag">' + esc(ev.status || "-") + '</span><div class="resource-hints">' + esc(ev.clientIp || "-") + '</div></div>' +
+        '</div>'
+      ).join("") : '<div class="empty"><div><strong>No audit events</strong><div>No recent HTTPS access decisions were reported.</div></div></div>';
+      return '<div class="panel-grid">' +
+        small("Bearer Tokens", policy.bearerTokens || 0) +
+        small("Rate Limit", policy.rateLimit || "off") +
+        small("Audit", policy.auditEnabled ? "enabled" : "disabled") +
+        '<div class="small-card"><div class="label">Policy</div><div class="actions"><input class="input compact" id="policy-rate-limit" placeholder="60/m" value="' + esc(policy.rateLimit || "") + '"><label class="checkline"><input id="policy-audit-enabled" type="checkbox" ' + (policy.auditEnabled ? "checked" : "") + '> Audit</label><button class="btn" data-policy-set="' + esc(t.tunnelId) + '" type="button">Set</button></div></div>' +
+        '<div class="small-card"><div class="label">Share Rotate</div><div class="actions"><input class="input compact" id="share-rotate-name" placeholder="name"><input class="input compact" id="share-rotate-ttl" placeholder="1h"><button class="btn" data-share-rotate="' + esc(t.tunnelId) + '" type="button">Rotate</button></div></div>' +
+        '<div class="small-card"><div class="label">Tunnel Credential</div><div class="actions"><button class="btn danger" data-rotate-secret="' + esc(t.tunnelId) + '" type="button">Rotate</button></div></div>' +
+      '</div><div class="resource-list">' + rows + '</div>';
     }
 
 	    function domainPanel(t) {
@@ -1981,6 +2036,15 @@ var dashboardHTML = template.Must(template.New("dashboard").Parse(`<!doctype htm
       document.querySelectorAll("[data-domain-action]").forEach(el => {
         el.onclick = () => runDomainAction(el.getAttribute("data-domain-action") || "", el.getAttribute("data-tunnel") || "");
       });
+      document.querySelectorAll("[data-policy-set]").forEach(el => {
+        el.onclick = () => runPolicySet(el.getAttribute("data-policy-set") || "");
+      });
+      document.querySelectorAll("[data-share-rotate]").forEach(el => {
+        el.onclick = () => runShareRotate(el.getAttribute("data-share-rotate") || "");
+      });
+      document.querySelectorAll("[data-rotate-secret]").forEach(el => {
+        el.onclick = () => runServerSecretRotate(el.getAttribute("data-rotate-secret") || "");
+      });
       document.querySelectorAll("[data-open-apply]").forEach(el => {
         el.onclick = () => openApplyModal(configYAMLFor(tunnelByID(el.getAttribute("data-open-apply") || "") || selected()));
       });
@@ -2095,6 +2159,8 @@ var dashboardHTML = template.Must(template.New("dashboard").Parse(`<!doctype htm
       const deny = document.getElementById("new-deny")?.value.trim() || "";
       const tempToken = document.getElementById("new-temp-token")?.value.trim() || "";
       const tempTTL = document.getElementById("new-temp-ttl")?.value.trim() || "";
+      const rateLimit = document.getElementById("new-rate-limit")?.value.trim() || "";
+      const auditEnabled = document.getElementById("new-audit")?.checked || false;
       const parts = ["sealtun", "expose", String(port || "<port>")];
       if (protocol !== "https") parts.push("--protocol", protocol);
       if (domain) parts.push("--domain", domain, "--wait-domain");
@@ -2105,6 +2171,8 @@ var dashboardHTML = template.Must(template.New("dashboard").Parse(`<!doctype htm
         if (deny) parts.push("--ip-denylist", deny);
         if (tempToken) parts.push("--temporary-access-token", tempToken);
         if (tempTTL) parts.push("--temporary-access-ttl", tempTTL);
+        if (rateLimit) parts.push("--rate-limit", rateLimit);
+        if (auditEnabled) parts.push("--audit");
       }
       return parts.map(shellArg).join(" ");
     }
@@ -2119,6 +2187,27 @@ var dashboardHTML = template.Must(template.New("dashboard").Parse(`<!doctype htm
       if (action === "verify") return "sealtun domain verify " + shellArg(tunnelID) + (wait ? " --wait" : "");
       if (action === "clear") return "sealtun domain clear " + shellArg(tunnelID);
       return "";
+    }
+
+    function policySetCommand(tunnelID) {
+      const rateLimit = document.getElementById("policy-rate-limit")?.value.trim() || "";
+      const previousRateLimit = tabCache(tunnelByID(tunnelID) || selected(), "audit")?.policy?.rateLimit || "";
+      const audit = document.getElementById("policy-audit-enabled")?.checked;
+      const parts = ["sealtun", "policy", "set", tunnelID];
+      if (rateLimit) parts.push("--rate-limit", rateLimit);
+      else if (previousRateLimit) parts.push("--clear-rate-limit");
+      parts.push(audit ? "--audit" : "--no-audit");
+      return parts.map(shellArg).join(" ");
+    }
+
+    function shareRotateCommand(tunnelID, name, ttl) {
+      const parts = ["sealtun", "share", "rotate", tunnelID, name || "<name>"];
+      if (ttl) parts.push("--ttl", ttl);
+      return parts.map(shellArg).join(" ");
+    }
+
+    function serverSecretRotateCommand(tunnelID) {
+      return "sealtun rotate " + shellArg(tunnelID) + " --server-secret";
     }
 
     async function runTunnelAction(action, tunnelID) {
@@ -2159,6 +2248,65 @@ var dashboardHTML = template.Must(template.New("dashboard").Parse(`<!doctype htm
         const data = await postJSON(path, body);
         showToast("Domain " + action + " completed");
         if (data) openResultModal("Domain " + title(action), data);
+        tabDataCache = {};
+        await refresh();
+      } catch (err) {
+        showToast(err.message || String(err), true);
+      }
+    }
+
+    async function runPolicySet(tunnelID) {
+      if (!tunnelID) return;
+      const rateLimit = document.getElementById("policy-rate-limit")?.value.trim() || "";
+      const previousRateLimit = tabCache(tunnelByID(tunnelID) || selected(), "audit")?.policy?.rateLimit || "";
+      const body = {
+        rateLimit,
+        clearRateLimit: !rateLimit && !!previousRateLimit,
+        auditEnabled: document.getElementById("policy-audit-enabled")?.checked || false
+      };
+      const confirm = confirmPayload("policy-set", tunnelID, "Update access policy", policySetCommand(tunnelID));
+      if (!confirm) return;
+      body.confirm = confirm;
+      try {
+        const data = await postJSON("/api/tunnels/" + encodeURIComponent(tunnelID) + "/policy/set", body);
+        showToast("Policy updated");
+        openResultModal("Policy Updated", data);
+        tabDataCache = {};
+        await refresh();
+      } catch (err) {
+        showToast(err.message || String(err), true);
+      }
+    }
+
+    async function runShareRotate(tunnelID) {
+      if (!tunnelID) return;
+      const name = document.getElementById("share-rotate-name")?.value.trim() || "";
+      const ttl = document.getElementById("share-rotate-ttl")?.value.trim() || "1h";
+      if (!name) {
+        showToast("Share name is required", true);
+        return;
+      }
+      const confirm = confirmPayload("share-rotate", tunnelID, "Rotate temporary share link", shareRotateCommand(tunnelID, name, ttl));
+      if (!confirm) return;
+      try {
+        const data = await postJSON("/api/tunnels/" + encodeURIComponent(tunnelID) + "/share/rotate", { confirm, name, ttl });
+        showToast("Share link rotated");
+        openResultModal("Rotated Share Link", data);
+        tabDataCache = {};
+        await refresh();
+      } catch (err) {
+        showToast(err.message || String(err), true);
+      }
+    }
+
+    async function runServerSecretRotate(tunnelID) {
+      if (!tunnelID) return;
+      const confirm = confirmPayload("rotate-server-secret", tunnelID, "Rotate tunnel credential", serverSecretRotateCommand(tunnelID));
+      if (!confirm) return;
+      try {
+        const data = await postJSON("/api/tunnels/" + encodeURIComponent(tunnelID) + "/rotate/server-secret", { confirm });
+        showToast("Tunnel credential rotated");
+        openResultModal("Tunnel Credential Rotated", data);
         tabDataCache = {};
         await refresh();
       } catch (err) {
@@ -2212,6 +2360,8 @@ var dashboardHTML = template.Must(template.New("dashboard").Parse(`<!doctype htm
           '<label class="field" data-http-field>IP Denylist<input class="input" id="new-deny" placeholder="optional"></label>' +
           '<label class="field" data-http-field>Temporary Token<input class="input" id="new-temp-token" placeholder="optional"></label>' +
           '<label class="field" data-http-field>Temporary TTL<input class="input" id="new-temp-ttl" placeholder="1h"></label>' +
+          '<label class="field" data-http-field>Rate Limit<input class="input" id="new-rate-limit" placeholder="60/m"></label>' +
+          '<label class="field" data-http-field>Audit<label class="checkline"><input id="new-audit" type="checkbox"> Enable access audit</label></label>' +
         '</div>' +
         '<div class="command-preview" id="new-command">sealtun expose 3000</div>' +
         '<pre class="result-box" id="new-result">Ready.</pre>';
@@ -2220,7 +2370,8 @@ var dashboardHTML = template.Must(template.New("dashboard").Parse(`<!doctype htm
         const isHTTPS = document.getElementById("new-protocol").value === "https";
         backdrop.querySelectorAll("[data-http-field] input").forEach(input => {
           input.disabled = !isHTTPS;
-          if (!isHTTPS) input.value = "";
+          if (!isHTTPS && input.type === "checkbox") input.checked = false;
+          if (!isHTTPS && input.type !== "checkbox") input.value = "";
         });
         document.getElementById("new-command").textContent = exposeCommandFromForm();
       };
@@ -2261,7 +2412,7 @@ var dashboardHTML = template.Must(template.New("dashboard").Parse(`<!doctype htm
           target.innerHTML = '<div class="context-note">' + esc(err.message || String(err)) + '</div>';
         }
       };
-      ["new-name", "new-protocol", "new-port", "new-domain", "new-basic-auth", "new-bearer", "new-allow", "new-deny", "new-temp-token", "new-temp-ttl"].forEach(id => {
+      ["new-name", "new-protocol", "new-port", "new-domain", "new-basic-auth", "new-bearer", "new-allow", "new-deny", "new-temp-token", "new-temp-ttl", "new-rate-limit", "new-audit"].forEach(id => {
         document.getElementById(id).oninput = updateProtocolFields;
         document.getElementById(id).onchange = updateProtocolFields;
       });
@@ -2282,7 +2433,9 @@ var dashboardHTML = template.Must(template.New("dashboard").Parse(`<!doctype htm
           ipAllowlist: splitList("new-allow"),
           ipDenylist: splitList("new-deny"),
           temporaryAccessToken: document.getElementById("new-temp-token").value.trim(),
-          temporaryAccessTTL: document.getElementById("new-temp-ttl").value.trim()
+          temporaryAccessTTL: document.getElementById("new-temp-ttl").value.trim(),
+          rateLimit: document.getElementById("new-rate-limit").value.trim(),
+          auditEnabled: document.getElementById("new-audit").checked
         };
         try {
           const data = await postJSON("/api/tunnels", body);

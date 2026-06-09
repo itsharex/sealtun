@@ -20,6 +20,8 @@ type accessPolicyInput struct {
 	TemporaryTokenEnv string
 	TemporaryTTL      time.Duration
 	TemporaryName     string
+	RateLimit         string
+	AuditEnabled      bool
 }
 
 type applyAccessPolicy struct {
@@ -28,6 +30,8 @@ type applyAccessPolicy struct {
 	IPAllowlist    []string             `json:"ipAllowlist,omitempty" yaml:"ipAllowlist,omitempty"`
 	IPDenylist     []string             `json:"ipDenylist,omitempty" yaml:"ipDenylist,omitempty"`
 	TemporaryLinks []applyTemporaryLink `json:"temporaryLinks,omitempty" yaml:"temporaryLinks,omitempty"`
+	RateLimit      string               `json:"rateLimit,omitempty" yaml:"rateLimit,omitempty"`
+	Audit          *applyAuditConfig    `json:"audit,omitempty" yaml:"audit,omitempty"`
 }
 
 type applyTemporaryLink struct {
@@ -36,6 +40,10 @@ type applyTemporaryLink struct {
 	TokenEnv  string `json:"tokenEnv,omitempty" yaml:"tokenEnv,omitempty"`
 	TTL       string `json:"ttl,omitempty" yaml:"ttl,omitempty"`
 	ExpiresAt string `json:"expiresAt,omitempty" yaml:"expiresAt,omitempty"`
+}
+
+type applyAuditConfig struct {
+	Enabled bool `json:"enabled" yaml:"enabled"`
 }
 
 func resolveAccessPolicy(input accessPolicyInput, now time.Time, lookupEnv func(string) string) (*session.AccessPolicy, error) {
@@ -53,6 +61,10 @@ func resolveAccessPolicy(input accessPolicyInput, now time.Time, lookupEnv func(
 	}
 	policy.IPAllowlist = normalizeStringList(input.IPAllowlist)
 	policy.IPDenylist = normalizeStringList(input.IPDenylist)
+	policy.RateLimit = strings.TrimSpace(input.RateLimit)
+	if input.AuditEnabled {
+		policy.Audit = &session.AuditConfig{Enabled: true}
+	}
 	if input.TemporaryToken != "" || input.TemporaryTokenEnv != "" {
 		if input.TemporaryTTL <= 0 {
 			return nil, fmt.Errorf("temporary access token requires --temporary-access-ttl greater than 0")
@@ -88,6 +100,10 @@ func resolveApplyAccessPolicy(config *applyAccessPolicy, now time.Time, lookupEn
 	policy := &session.AccessPolicy{
 		IPAllowlist: normalizeStringList(config.IPAllowlist),
 		IPDenylist:  normalizeStringList(config.IPDenylist),
+		RateLimit:   strings.TrimSpace(config.RateLimit),
+	}
+	if config.Audit != nil && config.Audit.Enabled {
+		policy.Audit = &session.AuditConfig{Enabled: true}
 	}
 	if config.BearerToken != "" || config.BearerTokenEnv != "" {
 		token, err := resolveSecretValue(config.BearerToken, config.BearerTokenEnv, "bearer token", lookupEnv)
@@ -178,7 +194,16 @@ func accessPolicyToRuntime(policy *session.AccessPolicy) *accesspolicy.Policy {
 		IPAllowlist:       append([]string(nil), policy.IPAllowlist...),
 		IPDenylist:        append([]string(nil), policy.IPDenylist...),
 		TemporaryTokens:   tokens,
+		RateLimit:         policy.RateLimit,
+		Audit:             auditConfigToRuntime(policy.Audit),
 	}
+}
+
+func auditConfigToRuntime(config *session.AuditConfig) *accesspolicy.AuditConfig {
+	if config == nil {
+		return nil
+	}
+	return &accesspolicy.AuditConfig{Enabled: config.Enabled}
 }
 
 func resolveSecretValue(value, envName, label string, lookupEnv func(string) string) (string, error) {

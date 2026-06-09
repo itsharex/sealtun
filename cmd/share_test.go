@@ -75,7 +75,6 @@ func TestCreateShareLinkRejectsStoppedAndExpiredSessionsBeforeRemoteMutation(t *
 
 	stopped := session.TunnelSession{
 		TunnelID:        "stopped",
-		Protocol:        "https",
 		Host:            "stopped.example.com",
 		LocalPort:       "3000",
 		Secret:          "secret",
@@ -110,5 +109,56 @@ func TestSharePublicHostFallsBackToSealosHost(t *testing.T) {
 	got := sharePublicHost(session.TunnelSession{SealosHost: "sealtun-web.example.com"})
 	if got != "sealtun-web.example.com" {
 		t.Fatalf("expected Sealos host fallback, got %q", got)
+	}
+}
+
+func TestCloneAccessPolicyPreservesRateLimitAndAudit(t *testing.T) {
+	t.Parallel()
+
+	got := cloneAccessPolicy(&session.AccessPolicy{
+		RateLimit: "60/m",
+		Audit:     &session.AuditConfig{Enabled: true},
+	})
+	if got.RateLimit != "60/m" || got.Audit == nil || !got.Audit.Enabled {
+		t.Fatalf("expected rate limit and audit to be cloned, got %#v", got)
+	}
+	got.Audit.Enabled = false
+	original := &session.AccessPolicy{Audit: &session.AuditConfig{Enabled: true}}
+	cloned := cloneAccessPolicy(original)
+	cloned.Audit.Enabled = false
+	if !original.Audit.Enabled {
+		t.Fatal("clone must not alias audit config")
+	}
+}
+
+func TestRotateShareLinkRequiresExistingNameBeforeRemoteMutation(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	hash, err := accesspolicy.HashToken("old-token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess := session.TunnelSession{
+		TunnelID:  "web",
+		Protocol:  "https",
+		Host:      "web.example.com",
+		LocalPort: "3000",
+		Secret:    "secret",
+		AccessPolicy: &session.AccessPolicy{
+			RateLimit: "60/m",
+			Audit:     &session.AuditConfig{Enabled: true},
+			TemporaryTokens: []session.TemporaryToken{{
+				Name:      "review",
+				TokenHash: hash,
+				TTL:       "1h",
+				ExpiresAt: time.Now().UTC().Add(time.Hour).Format(time.RFC3339),
+			}},
+		},
+	}
+	if err := session.Save(sess); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rotateShareLink(context.Background(), "web", "missing", time.Hour); err == nil || !strings.Contains(err.Error(), "not found") {
+		t.Fatalf("expected missing link rejection, got %v", err)
 	}
 }

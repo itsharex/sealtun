@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -23,6 +24,8 @@ type Policy struct {
 	IPAllowlist       []string         `json:"ipAllowlist,omitempty"`
 	IPDenylist        []string         `json:"ipDenylist,omitempty"`
 	TemporaryTokens   []TemporaryToken `json:"temporaryTokens,omitempty"`
+	RateLimit         string           `json:"rateLimit,omitempty"`
+	Audit             *AuditConfig     `json:"audit,omitempty"`
 }
 
 type TemporaryToken struct {
@@ -32,6 +35,42 @@ type TemporaryToken struct {
 	ExpiresAt string `json:"expiresAt"`
 }
 
+type AuditConfig struct {
+	Enabled bool `json:"enabled"`
+}
+
+type RateLimitSpec struct {
+	Limit  int
+	Window time.Duration
+	Raw    string
+}
+
+type RateLimiter struct {
+	mu      sync.Mutex
+	spec    RateLimitSpec
+	buckets map[string]rateLimitBucket
+}
+
+type rateLimitBucket struct {
+	WindowStart time.Time
+	Count       int
+}
+
+type AuditEvent struct {
+	Time     string `json:"time"`
+	Decision string `json:"decision"`
+	Reason   string `json:"reason"`
+	Method   string `json:"method"`
+	Path     string `json:"path"`
+	Status   int    `json:"status,omitempty"`
+	ClientIP string `json:"clientIp,omitempty"`
+}
+
+type AuditPayload struct {
+	Events []AuditEvent `json:"events"`
+	Total  int          `json:"total"`
+}
+
 func Empty(policy *Policy) bool {
 	if policy == nil {
 		return true
@@ -39,11 +78,17 @@ func Empty(policy *Policy) bool {
 	return len(policy.BearerTokenHashes) == 0 &&
 		len(policy.IPAllowlist) == 0 &&
 		len(policy.IPDenylist) == 0 &&
-		len(policy.TemporaryTokens) == 0
+		len(policy.TemporaryTokens) == 0 &&
+		strings.TrimSpace(policy.RateLimit) == "" &&
+		!AuditEnabled(policy)
 }
 
 func HasTokenAuth(policy *Policy) bool {
 	return policy != nil && (len(policy.BearerTokenHashes) > 0 || len(policy.TemporaryTokens) > 0)
+}
+
+func AuditEnabled(policy *Policy) bool {
+	return policy != nil && policy.Audit != nil && policy.Audit.Enabled
 }
 
 func HashToken(token string) (string, error) {
@@ -89,7 +134,93 @@ func Validate(policy *Policy) error {
 			return fmt.Errorf("temporary token expiresAt is required")
 		}
 	}
+	if strings.TrimSpace(policy.RateLimit) != "" {
+		if _, err := ParseRateLimit(policy.RateLimit); err != nil {
+			return fmt.Errorf("rate limit: %w", err)
+		}
+	}
 	return nil
+}
+
+func ParseRateLimit(value string) (RateLimitSpec, error) {
+	raw := strings.TrimSpace(value)
+	if raw == "" {
+		return RateLimitSpec{}, fmt.Errorf("value is required")
+	}
+	parts := strings.Split(raw, "/")
+	if len(parts) != 2 {
+		return RateLimitSpec{}, fmt.Errorf("must use <count>/<s|m|h>, for example 60/m")
+	}
+	limit, err := parsePositiveInt(strings.TrimSpace(parts[0]))
+	if err != nil {
+		return RateLimitSpec{}, fmt.Errorf("count %q must be a positive integer", strings.TrimSpace(parts[0]))
+	}
+	windowName := strings.ToLower(strings.TrimSpace(parts[1]))
+	var window time.Duration
+	switch windowName {
+	case "s":
+		window = time.Second
+	case "m":
+		window = time.Minute
+	case "h":
+		window = time.Hour
+	default:
+		return RateLimitSpec{}, fmt.Errorf("window must be s, m, or h")
+	}
+	return RateLimitSpec{Limit: limit, Window: window, Raw: fmt.Sprintf("%d/%s", limit, windowName)}, nil
+}
+
+func parsePositiveInt(value string) (int, error) {
+	limit, err := strconv.Atoi(value)
+	if err != nil || limit <= 0 {
+		return 0, fmt.Errorf("invalid positive integer")
+	}
+	return limit, nil
+}
+
+func NewRateLimiter(spec RateLimitSpec) *RateLimiter {
+	if spec.Limit <= 0 || spec.Window <= 0 {
+		return nil
+	}
+	return &RateLimiter{
+		spec:    spec,
+		buckets: make(map[string]rateLimitBucket),
+	}
+}
+
+func (l *RateLimiter) Allow(key string, now time.Time) bool {
+	if l == nil {
+		return true
+	}
+	key = strings.TrimSpace(key)
+	if key == "" {
+		key = "unknown"
+	}
+	if now.IsZero() {
+		now = time.Now()
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	bucket := l.buckets[key]
+	if bucket.WindowStart.IsZero() || now.Sub(bucket.WindowStart) >= l.spec.Window || now.Before(bucket.WindowStart) {
+		bucket = rateLimitBucket{WindowStart: now, Count: 0}
+	}
+	bucket.Count++
+	l.buckets[key] = bucket
+	l.pruneLocked(now)
+	return bucket.Count <= l.spec.Limit
+}
+
+func (l *RateLimiter) pruneLocked(now time.Time) {
+	if len(l.buckets) <= 1024 {
+		return
+	}
+	for key, bucket := range l.buckets {
+		if now.Sub(bucket.WindowStart) >= 2*l.spec.Window {
+			delete(l.buckets, key)
+		}
+	}
 }
 
 func NetworkAllowed(policy *Policy, r *http.Request) (bool, string) {

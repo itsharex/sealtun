@@ -28,38 +28,38 @@ const (
 )
 
 type TunnelSession struct {
-	TunnelID        string           `json:"tunnelId"`
-	Region          string           `json:"region"`
-	Namespace       string           `json:"namespace"`
-	Kubeconfig      string           `json:"kubeconfig,omitempty"`
-	Protocol        string           `json:"protocol"`
-	Host            string           `json:"host"`
-	SealosHost      string           `json:"sealosHost,omitempty"`
-	CustomDomain    string           `json:"customDomain,omitempty"`
-	PublicPort      int32            `json:"publicPort,omitempty"`
-	LocalPort       string           `json:"localPort"`
-	Secret          string           `json:"secret,omitempty"`
-	BasicAuth       *BasicAuthConfig `json:"basicAuth,omitempty"`
-	AccessPolicy    *AccessPolicy    `json:"accessPolicy,omitempty"`
-	TTL             string           `json:"ttl,omitempty"`
-	ExpiresAt       string           `json:"expiresAt,omitempty"`
-	Mode            string           `json:"mode,omitempty"`
-	PID             int              `json:"pid"`
+	TunnelID     string           `json:"tunnelId"`
+	Region       string           `json:"region"`
+	Namespace    string           `json:"namespace"`
+	Kubeconfig   string           `json:"kubeconfig,omitempty"`
+	Protocol     string           `json:"protocol"`
+	Host         string           `json:"host"`
+	SealosHost   string           `json:"sealosHost,omitempty"`
+	CustomDomain string           `json:"customDomain,omitempty"`
+	PublicPort   int32            `json:"publicPort,omitempty"`
+	LocalPort    string           `json:"localPort"`
+	Secret       string           `json:"secret,omitempty"`
+	BasicAuth    *BasicAuthConfig `json:"basicAuth,omitempty"`
+	AccessPolicy *AccessPolicy    `json:"accessPolicy,omitempty"`
+	TTL          string           `json:"ttl,omitempty"`
+	ExpiresAt    string           `json:"expiresAt,omitempty"`
+	Mode         string           `json:"mode,omitempty"`
+	PID          int              `json:"pid"`
 	// PIDStartToken is a best-effort fingerprint of the owning process (e.g. its
 	// start time). It is verified alongside PID so a reused PID belonging to an
 	// unrelated process is not mistaken for a still-alive tunnel owner.
-	PIDStartToken   string           `json:"pidStartToken,omitempty"`
-	ConnectionState string           `json:"connectionState,omitempty"`
+	PIDStartToken   string `json:"pidStartToken,omitempty"`
+	ConnectionState string `json:"connectionState,omitempty"`
 	// CredentialsScrubbed marks a session whose secrets were intentionally
 	// wiped (e.g. by logout). It is the authoritative scrub signal so that a
 	// tunnel that legitimately has no Secret (BasicAuth/AccessPolicy only) is
 	// not mistaken for a scrubbed one and silently stripped of its auth config.
-	CredentialsScrubbed bool             `json:"credentialsScrubbed,omitempty"`
-	LastError           string           `json:"lastError,omitempty"`
-	LastConnectedAt string           `json:"lastConnectedAt,omitempty"`
-	UpdatedAt       string           `json:"updatedAt,omitempty"`
-	CreatedAt       string           `json:"createdAt"`
-	Resources       []string         `json:"resources"`
+	CredentialsScrubbed bool     `json:"credentialsScrubbed,omitempty"`
+	LastError           string   `json:"lastError,omitempty"`
+	LastConnectedAt     string   `json:"lastConnectedAt,omitempty"`
+	UpdatedAt           string   `json:"updatedAt,omitempty"`
+	CreatedAt           string   `json:"createdAt"`
+	Resources           []string `json:"resources"`
 }
 
 type BasicAuthConfig struct {
@@ -74,6 +74,8 @@ type AccessPolicy struct {
 	IPAllowlist       []string         `json:"ipAllowlist,omitempty"`
 	IPDenylist        []string         `json:"ipDenylist,omitempty"`
 	TemporaryTokens   []TemporaryToken `json:"temporaryTokens,omitempty"`
+	RateLimit         string           `json:"rateLimit,omitempty"`
+	Audit             *AuditConfig     `json:"audit,omitempty"`
 }
 
 type TemporaryToken struct {
@@ -81,6 +83,10 @@ type TemporaryToken struct {
 	TokenHash string `json:"tokenHash"`
 	TTL       string `json:"ttl,omitempty"`
 	ExpiresAt string `json:"expiresAt"`
+}
+
+type AuditConfig struct {
+	Enabled bool `json:"enabled"`
 }
 
 func SessionsDir() (string, error) {

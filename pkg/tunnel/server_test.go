@@ -198,6 +198,135 @@ func TestServerMetricsRejectsUnsupportedMethods(t *testing.T) {
 	}
 }
 
+func TestServerAuditRequiresAuthorizationAndReadOnlyMethod(t *testing.T) {
+	t.Parallel()
+
+	server := NewServer("secret", 8080, "https", "3000")
+	req := httptest.NewRequest(http.MethodGet, "https://example.test/_sealtun/audit", nil)
+	rec := httptest.NewRecorder()
+	server.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 status, got %d", rec.Code)
+	}
+
+	postReq := httptest.NewRequest(http.MethodPost, "https://example.test/_sealtun/audit", nil)
+	postReq.Header.Set("Authorization", "Bearer secret")
+	postRec := httptest.NewRecorder()
+	server.ServeHTTP(postRec, postReq)
+	if postRec.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("expected 405 status, got %d", postRec.Code)
+	}
+}
+
+func TestServerAuditRecordsReasonsWithoutSecrets(t *testing.T) {
+	t.Parallel()
+
+	hash, err := accesspolicy.HashToken("access-token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tempHash, err := accesspolicy.HashToken("preview-token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	basicAuth, err := publicauth.NewBasicAuth("admin", "secret-pass")
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := NewServerWithOptions("tunnel-secret", 8080, "https", "3000", ServerOptions{
+		BasicAuth: basicAuth,
+		AccessPolicy: &accesspolicy.Policy{
+			BearerTokenHashes: []string{hash},
+			TemporaryTokens: []accesspolicy.TemporaryToken{{
+				TokenHash: tempHash,
+				ExpiresAt: "2099-01-01T00:00:00Z",
+			}},
+			Audit: &accesspolicy.AuditConfig{Enabled: true},
+		},
+	})
+
+	missingReq := httptest.NewRequest(http.MethodGet, "https://example.test/app?token=secret", nil)
+	server.ServeHTTP(httptest.NewRecorder(), missingReq)
+	basicReq := httptest.NewRequest(http.MethodGet, "https://example.test/app", nil)
+	basicReq.SetBasicAuth("admin", "secret-pass")
+	server.ServeHTTP(httptest.NewRecorder(), basicReq)
+	bearerReq := httptest.NewRequest(http.MethodGet, "https://example.test/api", nil)
+	bearerReq.Header.Set("Authorization", "Bearer access-token")
+	server.ServeHTTP(httptest.NewRecorder(), bearerReq)
+	tempReq := httptest.NewRequest(http.MethodGet, "https://example.test/share?_sealtun_token=preview-token", nil)
+	server.ServeHTTP(httptest.NewRecorder(), tempReq)
+
+	auditReq := httptest.NewRequest(http.MethodGet, "https://example.test/_sealtun/audit?since=1h", nil)
+	auditReq.Header.Set("Authorization", "Bearer tunnel-secret")
+	auditRec := httptest.NewRecorder()
+	server.ServeHTTP(auditRec, auditReq)
+	if auditRec.Code != http.StatusOK {
+		t.Fatalf("expected audit status 200, got %d: %s", auditRec.Code, auditRec.Body.String())
+	}
+	body := auditRec.Body.String()
+	for _, leaked := range []string{"access-token", "preview-token", "secret-pass", "Authorization", "token=secret", "_sealtun_token"} {
+		if strings.Contains(body, leaked) {
+			t.Fatalf("audit response leaked %q: %s", leaked, body)
+		}
+	}
+	for _, want := range []string{`"reason":"no-auth"`, `"reason":"basic-auth"`, `"reason":"bearer"`, `"reason":"temporary-token"`} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("audit response missing %s: %s", want, body)
+		}
+	}
+}
+
+func TestServerRateLimitDeniesAndAudits(t *testing.T) {
+	t.Parallel()
+
+	server := NewServerWithOptions("tunnel-secret", 8080, "https", "3000", ServerOptions{
+		AccessPolicy: &accesspolicy.Policy{
+			RateLimit: "1/m",
+			Audit:     &accesspolicy.AuditConfig{Enabled: true},
+		},
+	})
+	req1 := httptest.NewRequest(http.MethodGet, "https://example.test/app", nil)
+	req1.RemoteAddr = "203.0.113.7:1234"
+	server.ServeHTTP(httptest.NewRecorder(), req1)
+	req2 := httptest.NewRequest(http.MethodGet, "https://example.test/app", nil)
+	req2.RemoteAddr = "203.0.113.7:1234"
+	rec2 := httptest.NewRecorder()
+	server.ServeHTTP(rec2, req2)
+	if rec2.Code != http.StatusTooManyRequests {
+		t.Fatalf("expected 429 status, got %d", rec2.Code)
+	}
+
+	auditReq := httptest.NewRequest(http.MethodGet, "https://example.test/_sealtun/audit", nil)
+	auditReq.Header.Set("Authorization", "Bearer tunnel-secret")
+	auditRec := httptest.NewRecorder()
+	server.ServeHTTP(auditRec, auditReq)
+	if !strings.Contains(auditRec.Body.String(), `"reason":"rate-limit"`) {
+		t.Fatalf("expected rate-limit audit reason, got %s", auditRec.Body.String())
+	}
+}
+
+func TestServerAuditRecordsIPRuleReason(t *testing.T) {
+	t.Parallel()
+
+	server := NewServerWithOptions("tunnel-secret", 8080, "https", "3000", ServerOptions{
+		AccessPolicy: &accesspolicy.Policy{
+			IPDenylist: []string{"203.0.113.7"},
+			Audit:      &accesspolicy.AuditConfig{Enabled: true},
+		},
+	})
+	req := httptest.NewRequest(http.MethodGet, "https://example.test/app", nil)
+	req.RemoteAddr = "203.0.113.7:1234"
+	server.ServeHTTP(httptest.NewRecorder(), req)
+
+	auditReq := httptest.NewRequest(http.MethodGet, "https://example.test/_sealtun/audit", nil)
+	auditReq.Header.Set("Authorization", "Bearer tunnel-secret")
+	auditRec := httptest.NewRecorder()
+	server.ServeHTTP(auditRec, auditReq)
+	if !strings.Contains(auditRec.Body.String(), `"reason":"ip-denylist"`) {
+		t.Fatalf("expected ip-denylist audit reason, got %s", auditRec.Body.String())
+	}
+}
+
 func TestServerTCPEndpointRequiresAuthorization(t *testing.T) {
 	t.Parallel()
 

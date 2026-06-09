@@ -244,10 +244,10 @@ func TestEnsureTunnelUsesCompactHostAndSingleIngressWithBothPaths(t *testing.T) 
 	}
 
 	paths := ingresses.Items[0].Spec.Rules[0].HTTP.Paths
-	if len(paths) != 4 {
+	if len(paths) != 5 {
 		t.Fatalf("expected tunnel and app paths in one ingress, got %d", len(paths))
 	}
-	if paths[0].Path != "/_sealtun/ws" || paths[1].Path != "/_sealtun/healthz" || paths[2].Path != "/_sealtun/metrics" || paths[3].Path != "/" {
+	if paths[0].Path != "/_sealtun/ws" || paths[1].Path != "/_sealtun/healthz" || paths[2].Path != "/_sealtun/metrics" || paths[3].Path != "/_sealtun/audit" || paths[4].Path != "/" {
 		t.Fatalf("unexpected ingress paths: %#v", paths)
 	}
 }
@@ -319,10 +319,10 @@ func TestEnsureTunnelSSHCreatesNodePortService(t *testing.T) {
 		t.Fatal(err)
 	}
 	paths := ingress.Spec.Rules[0].HTTP.Paths
-	if len(paths) != 4 {
+	if len(paths) != 5 {
 		t.Fatalf("expected ssh ingress to expose control paths only, got %#v", paths)
 	}
-	if paths[0].Path != "/_sealtun/ws" || paths[1].Path != "/_sealtun/healthz" || paths[2].Path != "/_sealtun/metrics" || paths[3].Path != "/_sealtun/tcp" {
+	if paths[0].Path != "/_sealtun/ws" || paths[1].Path != "/_sealtun/healthz" || paths[2].Path != "/_sealtun/metrics" || paths[3].Path != "/_sealtun/audit" || paths[4].Path != "/_sealtun/tcp" {
 		t.Fatalf("unexpected ssh ingress paths: %#v", paths)
 	}
 }
@@ -687,6 +687,8 @@ func TestEnsureTunnelInjectsAccessPolicyViaSecret(t *testing.T) {
 			BearerTokenHashes: []string{hash},
 			IPAllowlist:       []string{"10.0.0.0/8"},
 			IPDenylist:        []string{"10.0.0.9"},
+			RateLimit:         "60/m",
+			Audit:             &accesspolicy.AuditConfig{Enabled: true},
 		},
 	})
 	if err != nil {
@@ -698,7 +700,7 @@ func TestEnsureTunnelInjectsAccessPolicyViaSecret(t *testing.T) {
 		t.Fatalf("expected auth secret to be created: %v", err)
 	}
 	policyJSON := string(authSecret.Data[accessPolicyKey])
-	if !strings.Contains(policyJSON, hash) || !strings.Contains(policyJSON, "10.0.0.0/8") {
+	if !strings.Contains(policyJSON, hash) || !strings.Contains(policyJSON, "10.0.0.0/8") || !strings.Contains(policyJSON, `"rateLimit":"60/m"`) || !strings.Contains(policyJSON, `"audit":{"enabled":true}`) {
 		t.Fatalf("expected access policy JSON in secret, got %s", policyJSON)
 	}
 	deployment, err := clientset.AppsV1().Deployments("default").Get(context.Background(), name, metav1.GetOptions{})

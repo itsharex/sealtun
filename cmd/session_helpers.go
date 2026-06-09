@@ -14,6 +14,7 @@ import (
 	"github.com/labring/sealtun/pkg/auth"
 	daemonstate "github.com/labring/sealtun/pkg/daemon"
 	"github.com/labring/sealtun/pkg/k8s"
+	tunnelprotocol "github.com/labring/sealtun/pkg/protocol"
 	"github.com/labring/sealtun/pkg/session"
 )
 
@@ -124,6 +125,18 @@ func sessionControlHost(sess session.TunnelSession) string {
 		return sess.SealosHost
 	}
 	return sess.Host
+}
+
+func sessionProtocol(sess session.TunnelSession) string {
+	protocol := tunnelprotocol.Normalize(sess.Protocol)
+	if protocol == "" {
+		return tunnelprotocol.HTTPS
+	}
+	return protocol
+}
+
+func sessionUsesHTTP(sess session.TunnelSession) bool {
+	return sessionProtocol(sess) == tunnelprotocol.HTTPS
 }
 
 func normalizePublicHostname(value string) (string, error) {

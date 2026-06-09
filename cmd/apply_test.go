@@ -275,6 +275,8 @@ func TestNormalizeApplyTunnelResolvesAccessPolicyAndTTL(t *testing.T) {
 			BearerTokenEnv: "SEALTUN_TEST_BEARER",
 			IPAllowlist:    []string{"10.0.0.0/8"},
 			IPDenylist:     []string{"10.0.0.9"},
+			RateLimit:      "60/m",
+			Audit:          &applyAuditConfig{Enabled: true},
 			TemporaryLinks: []applyTemporaryLink{{
 				Name:     "review",
 				TokenEnv: "SEALTUN_TEST_TEMP",
@@ -293,6 +295,9 @@ func TestNormalizeApplyTunnelResolvesAccessPolicyAndTTL(t *testing.T) {
 	}
 	if len(normalized.AccessPolicy.TemporaryTokens) != 1 || normalized.AccessPolicy.TemporaryTokens[0].Name != "review" {
 		t.Fatalf("expected temporary link config, got %#v", normalized.AccessPolicy.TemporaryTokens)
+	}
+	if normalized.AccessPolicy.RateLimit != "60/m" || normalized.AccessPolicy.Audit == nil || !normalized.AccessPolicy.Audit.Enabled {
+		t.Fatalf("expected rate limit and audit config, got %#v", normalized.AccessPolicy)
 	}
 	if normalized.ExpiresAt == "" {
 		t.Fatal("expected ttl to produce expiresAt")

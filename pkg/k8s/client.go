@@ -908,7 +908,7 @@ func (c *Client) ensureIngressForHost(ctx context.Context, name, sealosHost, pro
 	}
 	pathType := netv1.PathTypePrefix
 	ingressClass := "nginx"
-	paths := []string{"/_sealtun/ws", "/_sealtun/healthz", "/_sealtun/metrics"}
+	paths := []string{"/_sealtun/ws", "/_sealtun/healthz", "/_sealtun/metrics", "/_sealtun/audit"}
 	if tunnelprotocol.UsesRawTCP(protocol) {
 		paths = append(paths, "/_sealtun/tcp")
 	}

@@ -14,7 +14,7 @@ Start with the symptom, then confirm the layer before changing anything:
 | Custom domain not ready | DNS/CNAME or certificate | `domain plan`, `domain verify`, `domain doctor` | Correct CNAME, then wait/verify certificate |
 | Dashboard live status disconnects | Dashboard stream/network | page live badge, manual Refresh, dashboard logs | It should fall back to polling; debug only if polling also fails |
 | Resources tab shows missing or warning resources | Remote Kubernetes | `doctor <id>`, `events <id>`, `inspect <id> --remote` | Fix image/pod/service/ingress/cert issue named by diagnostics |
-| Basic Auth/Bearer/link fails | HTTPS access policy | `inspect <id>`, `logs <id>`, token length/expiry/IP | Fix credential source, token, temporary link expiry, or IP rules |
+| Basic Auth/Bearer/link/rate limit fails | HTTPS access policy | `inspect <id>`, `policy show <id>`, `policy audit <id>`, token length/expiry/IP/rate | Fix credential source, token, temporary link expiry, IP rules, or rate limit |
 
 Do not jump straight to `cleanup --all`; it is destructive and only appropriate when the user intentionally wants all tracked remote resources removed.
 
@@ -180,16 +180,21 @@ Symptoms:
 - Bearer token requests return unauthorized.
 - Temporary link stopped working.
 - IP allowlist denies a caller unexpectedly.
+- Requests return 429 or users are unsure why a request was allowed/denied.
 
 Actions:
 
 ```bash
 sealtun inspect <tunnel-id>
+sealtun policy show <tunnel-id>
+sealtun policy audit <tunnel-id> --since 10m
 sealtun logs <tunnel-id> --tail 200
 sealtun metrics <tunnel-id> --json
 ```
 
-Check the session access policy. Tokens must be at least 8 characters. Temporary links expire at `expiresAt`; query parameter name is `_sealtun_token`. IP decisions use `X-Real-IP`, then the last valid proxy-confirmed client IP in `X-Forwarded-For`, then `RemoteAddr`, so upstream proxy headers matter.
+Check the session access policy. Tokens must be at least 8 characters. Temporary links expire at `expiresAt`; query parameter name is `_sealtun_token`. IP decisions use `X-Real-IP`, then the last valid proxy-confirmed client IP in `X-Forwarded-For`, then `RemoteAddr`, so upstream proxy headers matter. Rate limits use fixed-window specs such as `60/m`; `429` responses should appear in `policy audit` with reason `rate-limit`.
+
+Access audit must not show plaintext tokens, Authorization headers, Basic Auth passwords, or temporary-link tokens. If a user needs to replace a leaked or stale temporary link, use `share rotate <tunnel-id> <name> --ttl 1h`; for the internal tunnel server secret, use `rotate <tunnel-id> --server-secret`.
 
 ## Metrics And Dashboard
 
@@ -201,7 +206,7 @@ Dashboard is a local workbench by default:
 sealtun dashboard --addr 127.0.0.1 --port 19777
 ```
 
-It can create tunnels, run YAML dry-run/diff/apply, stop/start/cleanup tunnels, show logs/metrics/events, and manage custom domains for the current active profile/region/namespace. Mutating actions require both the dashboard token and a confirmation value. Treat `dashboard --allow-remote` as exposing local operational control, not just read-only data; remote mode does not embed the token in HTML.
+It can create tunnels, run YAML dry-run/diff/apply, stop/start/cleanup tunnels, show logs/metrics/events/resources/audit, manage custom domains, set HTTPS policy, rotate share links, and rotate the tunnel server secret for the current active profile/region/namespace. Mutating actions require both the dashboard token and a confirmation value. Treat `dashboard --allow-remote` as exposing local operational control, not just read-only data; remote mode does not embed the token in HTML.
 
 ## Troubleshooting Response Shape
 

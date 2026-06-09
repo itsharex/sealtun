@@ -141,6 +141,10 @@ func exportAccessPolicy(sess session.TunnelSession, includeSecretPlaceholders bo
 	policy := &applyAccessPolicy{
 		IPAllowlist: append([]string(nil), sess.AccessPolicy.IPAllowlist...),
 		IPDenylist:  append([]string(nil), sess.AccessPolicy.IPDenylist...),
+		RateLimit:   sess.AccessPolicy.RateLimit,
+	}
+	if sess.AccessPolicy.Audit != nil && sess.AccessPolicy.Audit.Enabled {
+		policy.Audit = &applyAuditConfig{Enabled: true}
 	}
 	warnings := []string{}
 	if len(sess.AccessPolicy.BearerTokenHashes) > 0 {
@@ -164,7 +168,7 @@ func exportAccessPolicy(sess session.TunnelSession, includeSecretPlaceholders bo
 			warnings = append(warnings, fmt.Sprintf("tunnel %s temporary link %q token cannot be exported because only a hash is stored", sess.TunnelID, token.Name))
 		}
 	}
-	if policy.BearerTokenEnv == "" && len(policy.IPAllowlist) == 0 && len(policy.IPDenylist) == 0 && len(policy.TemporaryLinks) == 0 {
+	if policy.BearerTokenEnv == "" && len(policy.IPAllowlist) == 0 && len(policy.IPDenylist) == 0 && len(policy.TemporaryLinks) == 0 && policy.RateLimit == "" && policy.Audit == nil {
 		return nil, warnings
 	}
 	return policy, warnings
